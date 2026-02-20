@@ -239,13 +239,12 @@ export const IIFConverter: React.FC = () => {
              </div>
              <button 
                 onClick={() => {
-                  // Simply clear state - in a more complex app we would also call a revoke API
                   setIsConnected(false);
                   setAuthStatus('idle');
                 }}
-                className="text-[10px] font-mono text-zinc-500 hover:text-pink-500 underline uppercase tracking-tighter"
+                className="flex items-center gap-2 px-4 py-2 bg-pink-600/10 text-pink-500 border border-pink-600/50 hover:bg-pink-600 hover:text-white rounded text-[10px] font-bold font-mono uppercase tracking-widest transition-all shadow-lg active:scale-95"
              >
-                Disconnect
+                DISCONNECT
              </button>
            </div>
         )}
