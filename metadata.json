@@ -1,0 +1,5 @@
+{
+  "name": "Shopify Transaction Reporter - Multi",
+  "description": "A professional tool to convert Shopify CSV exports into clean, audit-ready PDF daily transaction reports with automated totaling and AI-powered insights.",
+  "requestFramePermissions": []
+}
