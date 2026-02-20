@@ -232,9 +232,21 @@ export const IIFConverter: React.FC = () => {
              )}
            </button>
         ) : (
-           <div className="flex items-center gap-2 px-4 py-2 bg-green-900/20 text-green-400 border border-green-500/20 rounded text-xs font-bold font-mono uppercase tracking-widest shadow-lg backdrop-blur-md">
-             <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
-             QB CONNECTED
+           <div className="flex items-center gap-3">
+             <div className="flex items-center gap-2 px-4 py-2 bg-green-900/20 text-green-400 border border-green-500/20 rounded text-xs font-bold font-mono uppercase tracking-widest shadow-lg backdrop-blur-md">
+               <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+               QB CONNECTED
+             </div>
+             <button 
+                onClick={() => {
+                  // Simply clear state - in a more complex app we would also call a revoke API
+                  setIsConnected(false);
+                  setAuthStatus('idle');
+                }}
+                className="text-[10px] font-mono text-zinc-500 hover:text-pink-500 underline uppercase tracking-tighter"
+             >
+                Disconnect
+             </button>
            </div>
         )}
       </div>
