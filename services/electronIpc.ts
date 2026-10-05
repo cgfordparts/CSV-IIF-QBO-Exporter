@@ -107,7 +107,8 @@ const createBrowserIpcMock = (): IpcBridge => ({
       case 'settings:open-data-directory': {
         return { success: false, error: 'Open folder is only available in the desktop app.' };
       }
-      case 'history:get': {
+      case 'history:get':
+      case 'history:list': {
         return { imports: [] };
       }
       case 'history:check-duplicate': {
@@ -116,6 +117,7 @@ const createBrowserIpcMock = (): IpcBridge => ({
       case 'history:add': {
         return { success: false, error: 'Import history is only available in the desktop app.' };
       }
+      case 'history:remove':
       case 'history:clear': {
         return { success: false, error: 'Import history is only available in the desktop app.' };
       }

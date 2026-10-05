@@ -72,6 +72,19 @@ export function formatDisplayDateRange(fromDate: string, toDate: string): string
   return `${formatDisplayDate(fromDate)} to ${formatDisplayDate(toDate)}`;
 }
 
+/** Clock time printed in the CSV, without shifting it into the PC timezone. */
+export function formatClockTime(dateTime: string | null | undefined): string {
+  if (!dateTime) return '';
+  const match = String(dateTime).match(/(?:T|\s)(\d{1,2}):(\d{2})/);
+  if (!match) return '';
+  let hour = Number(match[1]);
+  const minute = match[2];
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return `${hour}:${minute} ${suffix}`;
+}
+
 export function formatMoney(n: number): string {
   const formatted = Math.abs(n).toLocaleString(undefined, {
     minimumFractionDigits: 2,

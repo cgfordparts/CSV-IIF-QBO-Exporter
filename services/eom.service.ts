@@ -190,7 +190,7 @@ export const parsePayoutsFromCsvText = (content: string, filename: string): Arch
       id: `${payoutId}-${index}`,
       orderNumber: String(row['Order'] || row['Name'] || `Line-${index}`),
       dateTime: String(row['Transaction Date'] || row['Created at'] || ''),
-      customerName: String(row['Payment Method Name'] || row['Card Source'] || 'card'),
+      customerName: String(row['Card Brand'] || row['Payment Method Name'] || 'card'),
       amount,
       fee,
       net,
@@ -294,6 +294,64 @@ export const applyOriginalCsvNames = (
   });
 };
 
+type ShopifyHistoryImport = {
+  payoutId?: string;
+  payoutDate?: string;
+  payoutStatus?: string;
+  filename?: string;
+  importDate?: string;
+  transactions?: Array<Partial<PayoutLine> & { id?: string }>;
+};
+
+/** One record per Shopify payout ID. A later import of the same payout replaces the earlier one. */
+export const payoutsFromShopifyHistory = (imports: ShopifyHistoryImport[]): ArchivedPayout[] => {
+  const byId = new Map<string, ShopifyHistoryImport>();
+  (imports || []).forEach((imp) => {
+    const payoutId = String(imp?.payoutId || '').trim();
+    if (!payoutId) return;
+    const prev = byId.get(payoutId);
+    if (!prev || String(imp.importDate || '') >= String(prev.importDate || '')) {
+      byId.set(payoutId, imp);
+    }
+  });
+
+  return Array.from(byId.values()).flatMap((imp) => {
+    const payoutId = String(imp.payoutId || '').trim();
+    const payoutDate = String(imp.payoutDate || '').slice(0, 10);
+    if (!payoutDate) return [];
+    const filename = fileBaseName(String(imp.filename || `${payoutId}.csv`));
+    const transactions: PayoutLine[] = (imp.transactions || []).map((tx, index) => ({
+      id: String(tx.id || `${payoutId}-${index}`),
+      orderNumber: String(tx.orderNumber || ''),
+      dateTime: String(tx.dateTime || ''),
+      customerName: String(tx.customerName || ''),
+      amount: Number(tx.amount) || 0,
+      fee: Number(tx.fee) || 0,
+      net: Number(tx.net) || 0,
+      type: String(tx.type || ''),
+      cardBrand: String(tx.cardBrand || ''),
+      currency: String(tx.currency || 'USD'),
+      availableOn: String(tx.availableOn || ''),
+    }));
+    const types = Array.from(new Set(transactions.map((tx) => tx.type.trim()).filter(Boolean)));
+    return [{
+      payoutId,
+      payoutDate,
+      payoutStatus: String(imp.payoutStatus || ''),
+      filename,
+      suffix: filenameSuffix(filename),
+      isPrimary: false,
+      bankDate: payoutDate,
+      refundOnly: types.length === 1 && types[0].toLowerCase() === 'refund',
+      amount: fromCents(transactions.reduce((sum, tx) => sum + cents(tx.amount), 0)),
+      fee: fromCents(transactions.reduce((sum, tx) => sum + cents(tx.fee), 0)),
+      net: fromCents(transactions.reduce((sum, tx) => sum + cents(tx.net), 0)),
+      types,
+      transactions,
+    }];
+  });
+};
+
 const inRange = (value: string, fromDate: string, toDate: string): boolean =>
   value >= fromDate && value <= toDate;
 
@@ -386,6 +444,18 @@ export const reconcileEom = (
 
   dated.forEach((payout) => {
     const inWindow = inRange(payout.bankDate, fromDate, toDate);
+
+    const unpostedTail = payout.payoutId.startsWith('PENDING-') || payout.types.includes('pending');
+    if (unpostedTail) {
+      if (inWindow || inRange(payout.payoutDate, fromDate, toDate)) {
+        exceptions.push({
+          kind: 'in_transit',
+          payout,
+          note: 'These PayPal sales are after the last withdrawal and have not been deposited yet.',
+        });
+      }
+      return;
+    }
 
     const status = payout.payoutStatus.toLowerCase();
     const stillPending = (status === 'in_transit' || status === 'scheduled') && payout.bankDate > today;

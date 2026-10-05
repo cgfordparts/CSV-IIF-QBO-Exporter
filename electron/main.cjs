@@ -282,6 +282,7 @@ const registerEomIpc = () => {
     const dataDirectory = await getDataDirectory();
     await fsp.mkdir(dataDirectory, { recursive: true });
     let added = 0;
+    let updated = 0;
     let skipped = 0;
 
     for (const record of incoming) {
@@ -305,7 +306,13 @@ const registerEomIpc = () => {
 
       try {
         await fsp.access(dest);
-        skipped += 1;
+        const existing = await fsp.readFile(dest, 'utf8');
+        if (existing === content) {
+          skipped += 1;
+          continue;
+        }
+        await fsp.writeFile(dest, content, 'utf8');
+        updated += 1;
         continue;
       } catch {
         // File does not exist yet.
@@ -319,6 +326,7 @@ const registerEomIpc = () => {
     const csvFiles = await walkCsvFiles(dataDirectory);
     return {
       added,
+      updated,
       skipped,
       total: csvFiles.length,
       dataDirectory,
@@ -356,6 +364,7 @@ const registerEomIpc = () => {
     const paypalDir = await paypalDirectory();
     await fsp.mkdir(paypalDir, { recursive: true });
     let added = 0;
+    let updated = 0;
     let skipped = 0;
 
     for (const record of incoming) {
@@ -374,7 +383,13 @@ const registerEomIpc = () => {
 
       try {
         await fsp.access(dest);
-        skipped += 1;
+        const existing = await fsp.readFile(dest, 'utf8');
+        if (existing === content) {
+          skipped += 1;
+          continue;
+        }
+        await fsp.writeFile(dest, content, 'utf8');
+        updated += 1;
         continue;
       } catch {
         // File does not exist yet.
@@ -387,6 +402,7 @@ const registerEomIpc = () => {
     const csvFiles = await walkCsvFiles(paypalDir);
     return {
       added,
+      updated,
       skipped,
       total: csvFiles.length,
       dataDirectory: paypalDir,
@@ -434,6 +450,8 @@ const registerQuickBooksIpc = () => {
 const registerHistoryIpc = () => {
   safeHandle('history:get', () => historyService.getHistory());
 
+  safeHandle('history:list', () => ({ imports: historyService.listImports() }));
+
   safeHandle('history:check-duplicate', (_event, { content, filename, transactions, source } = {}) => {
     return historyService.checkDuplicate(content, filename, transactions, source);
   });
@@ -442,6 +460,15 @@ const registerHistoryIpc = () => {
     try {
       const result = historyService.addImport(source, filename, fileContent, transactions);
       return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  safeHandle('history:remove', (_event, { importId } = {}) => {
+    try {
+      const result = historyService.removeImport(importId);
+      return { success: true, removed: result.removed, imports: result.history.imports };
     } catch (err) {
       return { success: false, error: err.message };
     }

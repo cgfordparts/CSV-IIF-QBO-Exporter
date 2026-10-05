@@ -13,12 +13,7 @@ const cents = (value: number): number => Math.round(value * 100);
 const fromCents = (value: number): number => value / 100;
 
 const WITHDRAWAL_TYPES = new Set(['General Withdrawal', 'User Initiated Withdrawal']);
-const SALE_TYPES = new Set([
-  'Express Checkout Payment',
-  'General Payment',
-  'Mass Pay Payment',
-  'Payment Refund',
-]);
+const SKIPPED_ACTIVITY_TYPES = new Set(['Bank Deposit to PP Account']);
 
 const paypalDate = (row: Record<string, unknown>): string | null =>
   getCalendarDateString(String(row['Date'] || '').trim());
@@ -47,7 +42,7 @@ export const isPaypalActivityCsv = (content: string): boolean => {
 
 const toSaleLine = (row: Record<string, unknown>, index: number): PayoutLine | null => {
   const type = String(row['Type'] || '').trim();
-  if (!SALE_TYPES.has(type)) return null;
+  if (!type || WITHDRAWAL_TYPES.has(type) || SKIPPED_ACTIVITY_TYPES.has(type)) return null;
   const date = String(row['Date'] || '').trim();
   const time = String(row['Time'] || '').trim();
   if (!date || !time) return null;
@@ -89,6 +84,30 @@ const buildFromRows = (
     if (sale) {
       sales.push(sale);
       buffer.push(sale);
+      return;
+    }
+
+    if (SKIPPED_ACTIVITY_TYPES.has(type)) {
+      const payoutDate = paypalDate(row);
+      const payoutId = String(row['Transaction ID'] || `${filename}-bank-${index}`).trim();
+      if (!payoutDate || !payoutId) return;
+      const pulled = Math.abs(money(row['Net'] || row['Gross']));
+      if (!pulled) return;
+      withdrawals.push({
+        payoutId,
+        payoutDate,
+        payoutStatus: String(row['Status'] || 'Completed').trim(),
+        filename: depositCsvName(payoutDate, 0) || `${payoutDate}.csv`,
+        suffix: 0,
+        isPrimary: true,
+        bankDate: rollIfClosed(payoutDate),
+        refundOnly: false,
+        amount: -pulled,
+        fee: 0,
+        net: -pulled,
+        types: [type],
+        transactions: [],
+      });
       return;
     }
 

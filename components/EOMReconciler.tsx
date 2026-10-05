@@ -28,7 +28,7 @@ import {
   reconcileEom,
   sumCalendarDays,
 } from '../services/eom.service';
-import { formatDisplayDate } from '../services/dateUtils';
+import { formatClockTime, formatDisplayDate } from '../services/dateUtils';
 import { isPaypalActivityCsv, mergePaypalActivityFiles, reconcilePaypalEom } from '../services/paypalEom.service';
 import { generateEOMPdf } from '../services/pdfGenerator';
 
@@ -49,7 +49,7 @@ const getCardTypeColor = (brand: string) => {
   const value = brand.toLowerCase();
   if (value.includes('visa')) return 'text-blue-400 border-blue-500/30';
   if (value.includes('master')) return 'text-orange-400 border-orange-500/30';
-  if (value.includes('amex') || value.includes('american express')) return 'text-cyan-300 border-cyan-500/30';
+  if (value.includes('amex') || value.includes('american')) return 'text-cyan-300 border-cyan-500/30';
   return 'text-zinc-500 border-zinc-700';
 };
 
@@ -210,7 +210,7 @@ const PayoutTable: React.FC<{
               <tr key={transaction.id} className="hover:bg-cyan-500/5">
                 <td className="px-6 py-3 text-xs font-mono text-zinc-500">
                   {transaction.dateTime
-                    ? new Date(transaction.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    ? formatClockTime(transaction.dateTime)
                     : '—'}
                 </td>
                 <td className="px-6 py-3">
@@ -425,15 +425,18 @@ export const EOMReconciler: React.FC = () => {
       }
 
       let added = 0;
+      let updated = 0;
       let skipped = 0;
       if (shopifyPayload.length > 0) {
         const result = await ipc.invoke('eom:import-payouts', shopifyPayload);
         added += result.added || 0;
+        updated += result.updated || 0;
         skipped += result.skipped || 0;
       }
       if (paypalPayload.length > 0) {
         const result = await ipc.invoke('paypal:import', paypalPayload);
         added += result.added || 0;
+        updated += result.updated || 0;
         skipped += result.skipped || 0;
       }
 
@@ -442,6 +445,7 @@ export const EOMReconciler: React.FC = () => {
 
       const parts = [
         `Imported ${added} new file${added === 1 ? '' : 's'}`,
+        updated ? `${updated} updated` : null,
         skipped ? `${skipped} already archived` : null,
         parseErrors.length ? `${parseErrors.length} skipped as invalid` : null,
       ].filter(Boolean);

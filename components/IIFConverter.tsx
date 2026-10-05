@@ -124,8 +124,8 @@ export const IIFConverter: React.FC = () => {
     const removeAuthFailure = ipcRenderer.on('qb:auth-failure', handleAuthFailure);
 
     return () => {
-      removeAuthSuccess?.();
-      removeAuthFailure?.();
+      if (typeof removeAuthSuccess === 'function') removeAuthSuccess();
+      if (typeof removeAuthFailure === 'function') removeAuthFailure();
     };
   }, []);
 

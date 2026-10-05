@@ -174,6 +174,51 @@ function clearHistory() {
   return defaultHistory;
 }
 
+function listImports() {
+  const history = getHistory();
+  return (history.imports || [])
+    .map((imp) => {
+      const payoutIds = new Set(
+        (imp.transactions || []).map((tx) => String(tx.payoutId || '').trim()).filter(Boolean)
+      );
+      return {
+        importId: imp.importId,
+        source: imp.source,
+        filename: imp.filename,
+        importDate: imp.importDate,
+        payoutId: imp.payoutId || null,
+        payoutDate: imp.payoutDate || null,
+        payoutStatus: imp.payoutStatus || null,
+        csvNet: imp.csvNet,
+        csvGross: imp.csvGross,
+        transactionCount: (imp.transactions || []).length,
+        payoutCount: payoutIds.size,
+      };
+    })
+    .sort((a, b) => String(b.importDate || '').localeCompare(String(a.importDate || '')));
+}
+
+function removeImport(importId) {
+  const history = getHistory();
+  const index = (history.imports || []).findIndex((imp) => imp.importId === importId);
+  if (index < 0) {
+    throw new Error('That import is no longer in the history.');
+  }
+  const [removed] = history.imports.splice(index, 1);
+  saveHistory(history);
+  return { removed, history };
+}
+
+function shopifyPayoutId(transactions) {
+  const ids = new Set(
+    (transactions || [])
+      .map((tx) => String(tx.payoutId || '').trim())
+      .filter(Boolean)
+  );
+  if (ids.size !== 1) return null;
+  return [...ids][0];
+}
+
 function duplicateResult(imp, reason) {
   return {
     isDuplicate: true,
@@ -192,6 +237,21 @@ function checkDuplicate(fileContent, filename, transactions = [], source = '') {
   const existingByHash = history.imports.find((imp) => imp.fileHash === hash);
   if (existingByHash) {
     return duplicateResult(existingByHash, 'hash');
+  }
+
+  if (!isPaypalSource(source)) {
+    const payoutId = shopifyPayoutId(transactions);
+    if (payoutId) {
+      const existingPayout = history.imports.find(
+        (imp) => sameSource(imp.source, source) && imp.payoutId === payoutId
+      );
+      if (existingPayout) {
+        if (existingPayout.fileHash === hash) {
+          return duplicateResult(existingPayout, 'hash');
+        }
+        return { isDuplicate: false, importId: null };
+      }
+    }
   }
 
   if (!transactions || transactions.length === 0 || !source) {
@@ -277,14 +337,50 @@ function checkDuplicate(fileContent, filename, transactions = [], source = '') {
   return { isDuplicate: false, importId: null };
 }
 
+function totalsFor(rows) {
+  return {
+    csvGross: rows.reduce((sum, tx) => sum + Math.round((tx.amount || 0) * 100), 0) / 100,
+    csvFees: rows.reduce((sum, tx) => sum + Math.round((tx.fee || 0) * 100), 0) / 100,
+    csvNet: rows.reduce((sum, tx) => sum + Math.round((tx.net || 0) * 100), 0) / 100,
+  };
+}
+
 function addImport(source, filename, fileContent, transactions) {
   const hash = calculateHash(fileContent);
+  const history = getHistory();
+  const payoutIdEarly = isPaypalSource(source) ? null : shopifyPayoutId(transactions);
+
+  if (payoutIdEarly) {
+    const existing = history.imports.find(
+      (imp) => sameSource(imp.source, source) && imp.payoutId === payoutIdEarly
+    );
+    if (existing) {
+      if (existing.fileHash === hash) {
+        throw new Error(`File is a duplicate of Import ${existing.importId}`);
+      }
+      const storedTransactions = transactions || [];
+      const totals = totalsFor(storedTransactions);
+      const payoutTx = storedTransactions.find((tx) => tx.payoutId) || null;
+      existing.filename = filename;
+      existing.fileHash = hash;
+      existing.importDate = new Date().toISOString();
+      existing.grandTotal = totals.csvGross;
+      existing.csvGross = totals.csvGross;
+      existing.csvFees = totals.csvFees;
+      existing.csvNet = totals.csvNet;
+      existing.payoutDate = payoutTx?.payoutDate || existing.payoutDate || null;
+      existing.payoutStatus = payoutTx?.payoutStatus || existing.payoutStatus || null;
+      existing.transactions = storedTransactions;
+      saveHistory(history);
+      return { ...existing, replaced: true };
+    }
+  }
+
   const duplicateStatus = checkDuplicate(fileContent, filename, transactions, source);
   if (duplicateStatus.isDuplicate) {
     throw new Error(`File is a duplicate of Import ${duplicateStatus.importId}`);
   }
 
-  const history = getHistory();
 
   // PayPal bracket exports overlap on purpose — store only NEW Transaction IDs
   // (and never persist General Withdrawals)
@@ -324,9 +420,7 @@ function addImport(source, filename, fileContent, transactions) {
     ? storedTransactions.filter((tx) => !isPaypalWithdrawalType(tx.type))
     : storedTransactions;
 
-  const csvGross = salesRows.reduce((sum, tx) => sum + Math.round((tx.amount || 0) * 100), 0) / 100;
-  const csvFees = salesRows.reduce((sum, tx) => sum + Math.round((tx.fee || 0) * 100), 0) / 100;
-  const csvNet = salesRows.reduce((sum, tx) => sum + Math.round((tx.net || 0) * 100), 0) / 100;
+  const { csvGross, csvFees, csvNet } = totalsFor(salesRows);
 
   // Deposit identity from Shopify payout columns (one CSV = one Wells deposit)
   const payoutTx = storedTransactions.find((tx) => tx.payoutId) || null;
@@ -358,7 +452,9 @@ function addImport(source, filename, fileContent, transactions) {
 
 module.exports = {
   getHistory,
+  listImports,
   checkDuplicate,
   addImport,
+  removeImport,
   clearHistory
 };

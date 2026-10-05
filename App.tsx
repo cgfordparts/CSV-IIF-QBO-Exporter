@@ -12,7 +12,7 @@ import {
   Settings
 } from 'lucide-react';
 import { parseShopifyCSV, parsePaypalCSV } from './services/csvProcessor';
-import { formatDisplayDate, formatMoney } from './services/dateUtils';
+import { formatClockTime, formatDisplayDate, formatMoney } from './services/dateUtils';
 import {
   generateTransactionPDF,
   generateDayEndPDFDataUri,
@@ -23,6 +23,7 @@ import { ReportSummary, ReportStatus } from './types';
 import { IIFConverter } from './components/IIFConverter';
 import { EOMReconciler } from './components/EOMReconciler';
 import { SettingsPanel } from './components/SettingsPanel';
+import { assignBankDates, payoutsFromShopifyHistory } from './services/eom.service';
 import { getIpcRenderer } from './services/electronIpc';
 
 const ipc = getIpcRenderer();
@@ -69,7 +70,9 @@ const App: React.FC = () => {
     try {
       const fileList: File[] = Array.from(files);
       let newImportsCount = 0;
+      let updatedImportsCount = 0;
       let duplicateFilesCount = 0;
+      const failedFiles: string[] = [];
       const affectedMonths = new Set<string>();
       const saveErrors: string[] = [];
       const settings = await ipc.invoke('settings:get');
@@ -85,11 +88,33 @@ const App: React.FC = () => {
             : await parseShopifyCSV([file]);
         } catch (parseErr) {
           console.error(`Failed to parse file ${file.name}:`, parseErr);
+          failedFiles.push(file.name);
           continue;
         }
 
         if (!parsedSummary.allTransactions.length) {
+          failedFiles.push(file.name);
           continue;
+        }
+
+        if (reportSource === 'SHOPIFY') {
+          const headerLine = text.split(/\r?\n/, 1)[0] || '';
+          const isPayoutSummary = /Charges/i.test(headerLine) && /Bank Reference/i.test(headerLine) && !/Payout ID/i.test(headerLine);
+          if (isPayoutSummary) {
+            saveErrors.push(
+              `${file.name}: this is a payout summary (one row per payout, with a Total column), not the transaction export. It was not added. Use the individual payout CSVs.`
+            );
+            continue;
+          }
+          const payoutIds = new Set(
+            parsedSummary.allTransactions.map((tx) => tx.payoutId).filter(Boolean)
+          );
+          if (payoutIds.size > 1) {
+            saveErrors.push(
+              `${file.name}: contains ${payoutIds.size} payouts, so it was not added. Import the individual payout CSVs (like 09-11-2026.csv). If this Export All file is already in the monthly report, remove it under Settings.`
+            );
+            continue;
+          }
         }
 
         const dupCheck = await ipc.invoke('history:check-duplicate', {
@@ -112,7 +137,14 @@ const App: React.FC = () => {
         });
 
         if (addResult?.success) {
-          newImportsCount += 1;
+          if (addResult.data?.replaced) {
+            updatedImportsCount += 1;
+          } else {
+            newImportsCount += 1;
+          }
+          if (reportSource === 'SHOPIFY' && !addResult.data?.payoutId) {
+            saveErrors.push(`${file.name}: no Payout ID, so it was left out of the monthly deposit total`);
+          }
           getImportRollingMonths(addResult.data || {
             transactions: parsedSummary.allTransactions,
             payoutDate: parsedSummary.allTransactions.find((t) => t.payoutDate)?.payoutDate
@@ -130,14 +162,23 @@ const App: React.FC = () => {
             }
           }
         } else if (addResult?.error) {
-          console.error(`Failed to add ${file.name}:`, addResult.error);
+          if (String(addResult.error).toLowerCase().includes('duplicate')) {
+            duplicateFilesCount += 1;
+          } else {
+            saveErrors.push(`${file.name}: ${addResult.error}`);
+          }
         }
       }
 
       const updatedHistory = await ipc.invoke('history:get');
-      if (newImportsCount > 0 && canSaveToFolder && affectedMonths.size > 0) {
-        const sourceImports = (updatedHistory?.imports || []).filter((imp: any) => imp.source === reportSource);
-
+      const sourceImports = (updatedHistory?.imports || []).filter((imp: any) => imp.source === reportSource);
+      if (reportSource === 'SHOPIFY' && (newImportsCount > 0 || updatedImportsCount > 0)) {
+        affectedMonths.clear();
+        assignBankDates(payoutsFromShopifyHistory(sourceImports)).forEach((payout) => {
+          if (payout.bankDate?.length >= 7) affectedMonths.add(payout.bankDate.slice(0, 7));
+        });
+      }
+      if ((newImportsCount > 0 || updatedImportsCount > 0) && canSaveToFolder && affectedMonths.size > 0) {
         for (const ym of affectedMonths) {
           try {
             const base64Data = generateRollingPDF(sourceImports, ym, monthLabel(ym), reportSource);
@@ -165,6 +206,11 @@ const App: React.FC = () => {
       let msg = '';
       if (newImportsCount > 0) {
         msg += `Imported ${newImportsCount} CSV file${newImportsCount === 1 ? '' : 's'}. `;
+      }
+      if (updatedImportsCount > 0) {
+        msg += `Updated ${updatedImportsCount} payout file${updatedImportsCount === 1 ? '' : 's'} already on file. `;
+      }
+      if (newImportsCount > 0 || updatedImportsCount > 0) {
         if (!canSaveToFolder) {
           msg += 'Choose a data folder in Settings to automatically update the rolling monthly report. ';
         } else if (saveErrors.length === 0) {
@@ -172,9 +218,14 @@ const App: React.FC = () => {
         } else {
           msg += `Rolling PDF save had issues: ${saveErrors.join('; ')}. `;
         }
+      } else if (saveErrors.length > 0) {
+        msg += saveErrors.join('; ') + '. ';
       }
       if (duplicateFilesCount > 0) {
-        msg += `Skipped ${duplicateFilesCount} duplicate/overlapping file${duplicateFilesCount === 1 ? '' : 's'}. `;
+        msg += `${duplicateFilesCount} file${duplicateFilesCount === 1 ? ' is' : 's are'} already in the monthly report. Day-end export still uses this upload. `;
+      }
+      if (failedFiles.length > 0) {
+        msg += `Could not read ${failedFiles.join(', ')}. `;
       }
       setImportNotice(msg.trim() || null);
     } catch (err: any) {
@@ -245,8 +296,8 @@ const App: React.FC = () => {
   const getCardTypeColor = (brand: string) => {
     const b = brand.toLowerCase();
     if (b.includes('visa')) return 'text-blue-400 border-blue-500/30';
-    if (b.includes('mastercard')) return 'text-orange-400 border-orange-500/30';
-    if (b.includes('amex') || b.includes('american express')) return 'text-cyan-300 border-cyan-500/30';
+    if (b.includes('master')) return 'text-orange-400 border-orange-500/30';
+    if (b.includes('amex') || b.includes('american')) return 'text-cyan-300 border-cyan-500/30';
     return 'text-zinc-500 border-zinc-700';
   };
 
@@ -335,13 +386,29 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center">
               <div className="flex p-1 bg-zinc-900 rounded-lg border border-zinc-800 w-full max-w-sm mx-auto shadow-xl relative">
                   <button 
-                    onClick={() => { setReportSource('SHOPIFY'); }} 
+                    onClick={() => {
+                      if (reportSource === 'SHOPIFY') return;
+                      setReportSource('SHOPIFY');
+                      setSummary(null);
+                      setStatus(ReportStatus.IDLE);
+                      setError(null);
+                      setImportNotice(null);
+                      setShowExportDayPicker(false);
+                    }} 
                     className={`flex-1 py-2 text-sm font-bold font-mono rounded-md transition-all duration-300 relative z-10 ${reportSource === 'SHOPIFY' ? 'text-black' : 'text-zinc-400'}`}
                   >
                     SHOPIFY
                   </button>
                   <button 
-                    onClick={() => { setReportSource('PAYPAL'); }} 
+                    onClick={() => {
+                      if (reportSource === 'PAYPAL') return;
+                      setReportSource('PAYPAL');
+                      setSummary(null);
+                      setStatus(ReportStatus.IDLE);
+                      setError(null);
+                      setImportNotice(null);
+                      setShowExportDayPicker(false);
+                    }} 
                     className={`flex-1 py-2 text-sm font-bold font-mono rounded-md transition-all duration-300 relative z-10 ${reportSource === 'PAYPAL' ? 'text-black' : 'text-zinc-400'}`}
                   >
                     PAYPAL
@@ -492,7 +559,7 @@ const App: React.FC = () => {
                                 <tr key={t.id} className="hover:bg-cyan-500/5 transition-all group">
                                   <td className="px-6 py-3">
                                     <div className="text-xs font-mono text-zinc-500 group-hover:text-zinc-300">
-                                      {new Date(t.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                      {formatClockTime(t.dateTime)}
                                     </div>
                                   </td>
                                   <td className="px-6 py-3">

@@ -206,7 +206,10 @@ export class ConverterService {
           }
 
           const rawAmount = getVal('AMOUNT');
-          const amountVal = parseFloat(rawAmount.toString().replace(/[^0-9.-]+/g, ""));
+          let amountVal = parseFloat(rawAmount.toString().replace(/[^0-9.-]+/g, ""));
+          if (Number.isNaN(amountVal)) {
+            amountVal = 0;
+          }
 
           // For Bills, expense lines should be POSITIVE. 
           // If for some reason they are negative (e.g. a credit memo), we preserve the sign.

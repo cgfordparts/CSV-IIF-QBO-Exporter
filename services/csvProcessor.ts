@@ -30,6 +30,7 @@ export const parseShopifyCSV = (files: FileList | File[]): Promise<ReportSummary
                 
                 // Date extraction logic
                 const dateValue = 
+                  row['Transaction Date'] ||
                   row['Created at'] || 
                   row['Date'] || 
                   row['Processed at'] || 
@@ -55,7 +56,7 @@ export const parseShopifyCSV = (files: FileList | File[]): Promise<ReportSummary
                 }
 
                 const status = row['Type'] || row['Financial Status'] || row['Status'] || 'Unknown';
-                const customer = row['Billing Name'] || row['Customer'] || row['Source'] || 'Internal/Guest';
+                const customer = row['Billing Name'] || row['Customer'] || row['Card Brand'] || row['Source'] || 'Internal/Guest';
                 const currency = row['Currency'] || 'USD';
                 
                 const cardBrand = row['Card Brand'] || row['Brand'] || row['Payment Method'] || row['Card'] || 'N/A';
