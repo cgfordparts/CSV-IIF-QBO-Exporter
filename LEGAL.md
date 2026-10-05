@@ -4,10 +4,10 @@
 **Last Updated: February 13, 2026**
 
 ### Introduction
-This Privacy Policy describes how the "Shopify & IIF Transaction Converter" (the "App") handles your data. This App is an internal business tool designed for private use.
+This Privacy Policy describes how "Shopify and PayPal Reporter" (the "App") handles your data. This App is an internal business tool designed for private use.
 
 ### Data Collection & Usage
-- **Local Processing:** The App processes Shopify CSV and Counterpoint IIF files locally on your computer. 
+- **Local Processing:** The App processes Shopify CSV, PayPal CSV, and Counterpoint IIF files locally on your computer. 
 - **No External Storage:** We do not collect, store, or monitor any financial data, customer names, or transaction details on any external servers or databases.
 - **QuickBooks Integration:** Financial data is transmitted directly to QuickBooks Online via the official Intuit API only when the user explicitly initiates a "Push to QBO" action.
 - **Third Parties:** We do not sell, trade, or otherwise transfer your information to outside parties.
@@ -15,12 +15,10 @@ This Privacy Policy describes how the "Shopify & IIF Transaction Converter" (the
 ### Data Security
 All transmissions to QuickBooks Online are encrypted using Industry Standard SSL/TLS protocols via OAuth2.
 
----
-
 ## 2. End-User License Agreement (EULA) / Terms of Service
 
 ### Acceptance of Terms
-By using the Shopify & IIF Transaction Converter, you agree to the following terms.
+By using Shopify and PayPal Reporter, you agree to the following terms.
 
 ### "As-Is" Warranty
 This software is provided "as-is" and "as available" without any warranties of any kind, express or implied. The developer does not warrant that the software will be error-free or that the conversion logic will match your specific accounting requirements perfectly.

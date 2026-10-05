@@ -1,22 +1,78 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { ConverterService, QBOJournalEntry, ConversionMode } from '../services/converter.service';
+import { formatDisplayDate } from '../services/dateUtils';
 
 const converter = new ConverterService();
 
-// Safely get IPC Renderer
-const getIpcRenderer = () => {
-  if (typeof window !== 'undefined' && (window as any).require) {
-    return (window as any).require('electron').ipcRenderer;
+type IpcBridge = {
+  invoke: (channel: string, ...args: unknown[]) => Promise<any>;
+  on: (channel: string, listener: (...args: any[]) => void) => (() => void) | void;
+};
+
+declare global {
+  interface Window {
+    electronAPI?: IpcBridge;
+    require?: (moduleName: 'electron') => {
+      ipcRenderer: {
+        invoke: IpcBridge['invoke'];
+        on: (channel: string, listener: (event: unknown, ...args: any[]) => void) => void;
+        removeListener: (channel: string, listener: (event: unknown, ...args: any[]) => void) => void;
+      };
+    };
   }
-  // Mock for browser dev environment
-  return {
-    on: () => {},
-    removeListener: () => {},
-    invoke: () => {
-        console.warn("Electron IPC not available. Are you running in the browser?");
-        return Promise.resolve();
+}
+
+const createBrowserIpcMock = (): IpcBridge => ({
+  on: () => () => {},
+  invoke: async (channel: string) => {
+    console.warn(`Electron IPC channel "${channel}" is not available in the browser.`);
+
+    switch (channel) {
+      case 'qb:get-status':
+        return { isConnected: false };
+      case 'qb:refresh-mappings':
+        return { success: false, counts: { accounts: 0, vendors: 0 } };
+      case 'qb:login':
+        return { success: false, error: 'QuickBooks is only available in the Electron app.' };
+      case 'qb:sync':
+        return {
+          success: false,
+          error: 'QuickBooks sync is only available in the Electron app.',
+          results: { success: 0, failed: 0, errors: [] },
+        };
+      default:
+        return {};
     }
-  };
+  },
+});
+
+// Safely get the preload bridge. The window.require fallback only supports older Electron builds.
+const getIpcRenderer = (): IpcBridge => {
+  if (typeof window === 'undefined') {
+    return createBrowserIpcMock();
+  }
+
+  if (window.electronAPI) {
+    return window.electronAPI;
+  }
+
+  if (window.require) {
+    const legacyIpcRenderer = window.require('electron').ipcRenderer;
+
+    return {
+      invoke: legacyIpcRenderer.invoke,
+      on: (channel, listener) => {
+        const wrappedListener = (_event: unknown, ...args: any[]) => listener(...args);
+        legacyIpcRenderer.on(channel, wrappedListener);
+
+        return () => {
+          legacyIpcRenderer.removeListener(channel, wrappedListener);
+        };
+      },
+    };
+  }
+
+  return createBrowserIpcMock();
 };
 
 const ipcRenderer = getIpcRenderer();
@@ -42,46 +98,61 @@ export const IIFConverter: React.FC = () => {
   useEffect(() => {
     // Check initial status
     ipcRenderer.invoke('qb:get-status').then((res: any) => {
-        if (res.isConnected) {
+        if (res?.isConnected) {
             setIsConnected(true);
             setAuthStatus('connected');
             refreshMappings();
         }
+    }).catch((err: Error) => {
+        console.warn('Unable to check QuickBooks status:', err.message);
     });
 
     // Listen for Auth Success
-    const handleAuthSuccess = (_event: any, token: any) => {
-      console.log('QBO Token received:', token);
+    const handleAuthSuccess = () => {
       setIsConnected(true);
       setAuthStatus('connected');
       refreshMappings();
     };
 
-    const handleAuthFailure = (_event: any, error: string) => {
+    const handleAuthFailure = (error: string) => {
       console.error('QBO Auth Error:', error);
       setAuthStatus('error');
       setErrorMessage(`QuickBooks Login Failed: ${error}`);
     };
 
-    ipcRenderer.on('qb:auth-success', handleAuthSuccess);
-    ipcRenderer.on('qb:auth-failure', handleAuthFailure);
+    const removeAuthSuccess = ipcRenderer.on('qb:auth-success', handleAuthSuccess);
+    const removeAuthFailure = ipcRenderer.on('qb:auth-failure', handleAuthFailure);
 
     return () => {
-      ipcRenderer.removeListener('qb:auth-success', handleAuthSuccess);
-      ipcRenderer.removeListener('qb:auth-failure', handleAuthFailure);
+      removeAuthSuccess?.();
+      removeAuthFailure?.();
     };
   }, []);
 
   const refreshMappings = async () => {
     const res = await ipcRenderer.invoke('qb:refresh-mappings');
-    if (res.success) {
+    if (res?.success) {
         setMappingStats(res.counts);
+    } else {
+        setMappingStats(null);
     }
   };
 
-  const handleConnectQBO = () => {
+  const handleConnectQBO = async () => {
     setAuthStatus('connecting');
-    ipcRenderer.invoke('qb:login');
+    setErrorMessage(null);
+
+    try {
+      const res = await ipcRenderer.invoke('qb:login');
+
+      if (res?.success === false) {
+        setAuthStatus('error');
+        setErrorMessage(`QuickBooks Login Failed: ${res.error}`);
+      }
+    } catch (err: any) {
+      setAuthStatus('error');
+      setErrorMessage(`QuickBooks Login Failed: ${err.message}`);
+    }
   };
 
   const handlePushToQBO = async () => {
@@ -97,10 +168,10 @@ export const IIFConverter: React.FC = () => {
             data: convertedData
         });
 
-        if (res.success) {
+        if (res?.success) {
             setSyncResult(res.results);
         } else {
-            setErrorMessage(`Sync Failed: ${res.error}`);
+            setErrorMessage(`Sync Failed: ${res?.error || 'Unknown QuickBooks sync error'}`);
         }
     } catch (err: any) {
         setErrorMessage(`Sync Error: ${err.message}`);
@@ -184,7 +255,7 @@ export const IIFConverter: React.FC = () => {
   const downloadCsv = () => {
     if (convertedData.length === 0) return;
 
-    const csvContent = converter.toCSV(convertedData);
+    const csvContent = converter.toCSV(convertedData, conversionMode);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     
@@ -455,8 +526,8 @@ export const IIFConverter: React.FC = () => {
                           <>
                             <td className="px-6 py-3 text-sm text-pink-500 font-mono whitespace-nowrap border-l-2 border-transparent group-hover:border-pink-500/50 transition-colors">{row.BillNo}</td>
                             <td className="px-6 py-3 text-sm text-zinc-400 whitespace-nowrap">{row.Supplier}</td>
-                            <td className="px-6 py-3 text-sm text-zinc-500 whitespace-nowrap font-mono">{row.JournalDate}</td>
-                            <td className="px-6 py-3 text-sm text-zinc-500 whitespace-nowrap font-mono">{row.DueDate || '-'}</td>
+                            <td className="px-6 py-3 text-sm text-zinc-500 whitespace-nowrap font-mono">{formatDisplayDate(row.JournalDate)}</td>
+                            <td className="px-6 py-3 text-sm text-zinc-500 whitespace-nowrap font-mono">{row.DueDate ? formatDisplayDate(row.DueDate) : '-'}</td>
                             <td className="px-6 py-3 text-sm text-zinc-200 font-medium whitespace-nowrap font-mono tracking-tight">{row.Account}</td>
                             <td className="px-6 py-3 text-sm text-cyan-300 text-right font-mono whitespace-nowrap">{row.LineAmount}</td>
                             <td className="px-6 py-3 text-sm text-zinc-500 truncate max-w-[200px]" title={row.Description}>{row.Description}</td>
@@ -464,8 +535,8 @@ export const IIFConverter: React.FC = () => {
                       ) : (
                           <>
                             <td className="px-6 py-3 text-sm text-pink-500 font-mono whitespace-nowrap border-l-2 border-transparent group-hover:border-pink-500/50 transition-colors">{row.JournalNo}</td>
-                            <td className="px-6 py-3 text-sm text-zinc-400 whitespace-nowrap">{row.JournalDate}</td>
-                            <td className="px-6 py-3 text-sm text-zinc-500 whitespace-nowrap font-mono">{row.DueDate || '-'}</td>
+                            <td className="px-6 py-3 text-sm text-zinc-400 whitespace-nowrap">{formatDisplayDate(row.JournalDate)}</td>
+                            <td className="px-6 py-3 text-sm text-zinc-500 whitespace-nowrap font-mono">{row.DueDate ? formatDisplayDate(row.DueDate) : '-'}</td>
                             <td className="px-6 py-3 text-sm text-zinc-200 font-medium whitespace-nowrap font-mono tracking-tight">{row.Account}</td>
                             <td className="px-6 py-3 text-sm text-cyan-300 text-right font-mono whitespace-nowrap">{row.Debit}</td>
                             <td className="px-6 py-3 text-sm text-cyan-300 text-right font-mono whitespace-nowrap">{row.Credit}</td>

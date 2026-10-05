@@ -1,33 +1,62 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   FileText, 
   Upload, 
-  Download, 
   FileDown,
   BarChart3, 
-  AlertCircle,
   Clock,
   Activity,
   RefreshCcw,
   CalendarDays,
-  ArrowLeftRight,
-  Database
+  Database,
+  Settings
 } from 'lucide-react';
 import { parseShopifyCSV, parsePaypalCSV } from './services/csvProcessor';
-import { generateTransactionPDF } from './services/pdfGenerator';
+import { formatDisplayDate, formatMoney } from './services/dateUtils';
+import {
+  generateTransactionPDF,
+  generateDayEndPDFDataUri,
+  generateRollingPDF,
+  getImportRollingMonths
+} from './services/pdfGenerator';
 import { ReportSummary, ReportStatus } from './types';
 import { IIFConverter } from './components/IIFConverter';
+import { EOMReconciler } from './components/EOMReconciler';
+import { SettingsPanel } from './components/SettingsPanel';
+import { getIpcRenderer } from './services/electronIpc';
 
-type ViewMode = 'SHOPIFY' | 'IIF';
+const ipc = getIpcRenderer();
+
+type ViewMode = 'DAILY' | 'EOM' | 'IIF' | 'SETTINGS';
+
+const monthLabel = (yearMonth: string) => {
+  const [year, month] = yearMonth.split('-');
+  return new Date(Number(year), Number(month) - 1).toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric'
+  });
+};
 
 const App: React.FC = () => {
-  const [viewMode, setViewMode] = useState<ViewMode>('SHOPIFY');
+  const [viewMode, setViewMode] = useState<ViewMode>('DAILY');
   
   // Shopify/PayPal State
   const [reportSource, setReportSource] = useState<'SHOPIFY' | 'PAYPAL'>('SHOPIFY');
   const [status, setStatus] = useState<ReportStatus>(ReportStatus.IDLE);
   const [summary, setSummary] = useState<ReportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasCustomDataFolder, setHasCustomDataFolder] = useState(false);
+  const [showExportDayPicker, setShowExportDayPicker] = useState(false);
+  const [selectedExportDays, setSelectedExportDays] = useState<string[]>([]);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    ipc.invoke('settings:get').then((res) => {
+      setHasCustomDataFolder(Boolean(res?.dataDirectory) && !res?.isDefault);
+    }).catch(() => {
+      setHasCustomDataFolder(false);
+    });
+  }, [viewMode]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -35,27 +64,172 @@ const App: React.FC = () => {
 
     setStatus(ReportStatus.PROCESSING);
     setError(null);
+    setImportNotice(null);
 
     try {
-      let parsedSummary: ReportSummary;
-      if (reportSource === 'PAYPAL') {
-        parsedSummary = await parsePaypalCSV(files);
-      } else {
-        parsedSummary = await parseShopifyCSV(files);
+      const fileList: File[] = Array.from(files);
+      let newImportsCount = 0;
+      let duplicateFilesCount = 0;
+      const affectedMonths = new Set<string>();
+      const saveErrors: string[] = [];
+      const settings = await ipc.invoke('settings:get');
+      const canSaveToFolder = Boolean(settings?.dataDirectory) && !settings?.isDefault;
+
+      for (const file of fileList) {
+        const text = await file.text();
+
+        let parsedSummary: ReportSummary;
+        try {
+          parsedSummary = reportSource === 'PAYPAL'
+            ? await parsePaypalCSV([file])
+            : await parseShopifyCSV([file]);
+        } catch (parseErr) {
+          console.error(`Failed to parse file ${file.name}:`, parseErr);
+          continue;
+        }
+
+        if (!parsedSummary.allTransactions.length) {
+          continue;
+        }
+
+        const dupCheck = await ipc.invoke('history:check-duplicate', {
+          content: text,
+          filename: file.name,
+          transactions: parsedSummary.allTransactions,
+          source: reportSource
+        });
+
+        if (dupCheck?.isDuplicate) {
+          duplicateFilesCount += 1;
+          continue;
+        }
+
+        const addResult = await ipc.invoke('history:add', {
+          source: reportSource,
+          filename: file.name,
+          fileContent: text,
+          transactions: parsedSummary.allTransactions
+        });
+
+        if (addResult?.success) {
+          newImportsCount += 1;
+          getImportRollingMonths(addResult.data || {
+            transactions: parsedSummary.allTransactions,
+            payoutDate: parsedSummary.allTransactions.find((t) => t.payoutDate)?.payoutDate
+          }).forEach((ym) => affectedMonths.add(ym));
+
+          if (canSaveToFolder) {
+            const arch = await ipc.invoke('archive:raw-csv', {
+              source: reportSource,
+              filename: file.name,
+              fileContent: text,
+              transactions: parsedSummary.allTransactions
+            });
+            if (!arch?.success) {
+              saveErrors.push(`RAW ${file.name}: ${arch?.error || 'archive failed'}`);
+            }
+          }
+        } else if (addResult?.error) {
+          console.error(`Failed to add ${file.name}:`, addResult.error);
+        }
       }
-      setSummary(parsedSummary);
+
+      const updatedHistory = await ipc.invoke('history:get');
+      if (newImportsCount > 0 && canSaveToFolder && affectedMonths.size > 0) {
+        const sourceImports = (updatedHistory?.imports || []).filter((imp: any) => imp.source === reportSource);
+
+        for (const ym of affectedMonths) {
+          try {
+            const base64Data = generateRollingPDF(sourceImports, ym, monthLabel(ym), reportSource);
+            const res = await ipc.invoke('pdf:save-rolling', {
+              yearMonth: ym,
+              monthName: monthLabel(ym),
+              source: reportSource,
+              base64Data
+            });
+            if (!res?.success) {
+              saveErrors.push(`${ym}: ${res?.error || 'Unknown save error'}`);
+            }
+          } catch (pdfErr: any) {
+            saveErrors.push(`${ym}: ${pdfErr.message || 'PDF generation failed'}`);
+          }
+        }
+      }
+
+      const displaySummary = reportSource === 'PAYPAL'
+        ? await parsePaypalCSV(fileList)
+        : await parseShopifyCSV(fileList);
+      setSummary(displaySummary);
       setStatus(ReportStatus.READY);
-    } catch (err) {
+
+      let msg = '';
+      if (newImportsCount > 0) {
+        msg += `Imported ${newImportsCount} CSV file${newImportsCount === 1 ? '' : 's'}. `;
+        if (!canSaveToFolder) {
+          msg += 'Choose a data folder in Settings to automatically update the rolling monthly report. ';
+        } else if (saveErrors.length === 0) {
+          msg += 'Rolling monthly report updated in the data folder. ';
+        } else {
+          msg += `Rolling PDF save had issues: ${saveErrors.join('; ')}. `;
+        }
+      }
+      if (duplicateFilesCount > 0) {
+        msg += `Skipped ${duplicateFilesCount} duplicate/overlapping file${duplicateFilesCount === 1 ? '' : 's'}. `;
+      }
+      setImportNotice(msg.trim() || null);
+    } catch (err: any) {
       console.error(err);
-      setError(`Failed to parse ${reportSource} CSV files. Please ensure they are valid.`);
+      setError(`Failed to parse ${reportSource} CSV files. ${err?.message || 'Please ensure they are valid.'}`);
       setStatus(ReportStatus.ERROR);
+    } finally {
+      event.target.value = '';
     }
   };
 
   const handleDownloadPDF = () => {
-    if (summary) {
-      generateTransactionPDF(summary, reportSource);
+    if (!summary || summary.dailyGroups.length === 0) return;
+    setSelectedExportDays(summary.dailyGroups.map((group) => group.date));
+    setShowExportDayPicker(true);
+  };
+
+  const toggleExportDay = (date: string) => {
+    setSelectedExportDays((prev) =>
+      prev.includes(date) ? prev.filter((day) => day !== date) : [...prev, date]
+    );
+  };
+
+  const handleConfirmExportDays = async () => {
+    if (!summary || selectedExportDays.length === 0) return;
+
+    generateTransactionPDF(summary, reportSource, selectedExportDays);
+
+    if (hasCustomDataFolder) {
+      const archiveErrors: string[] = [];
+      for (const day of [...selectedExportDays].sort()) {
+        try {
+          const dataUri = generateDayEndPDFDataUri(summary, reportSource, day);
+          if (!dataUri) {
+            archiveErrors.push(`${day}: could not build PDF`);
+            continue;
+          }
+          const res = await ipc.invoke('archive:day-end-pdf', {
+            source: reportSource,
+            isoDate: day,
+            base64Data: dataUri
+          });
+          if (!res?.success) {
+            archiveErrors.push(`${day}: ${res?.error || 'save failed'}`);
+          }
+        } catch (err: any) {
+          archiveErrors.push(`${day}: ${err.message || 'save failed'}`);
+        }
+      }
+      if (archiveErrors.length > 0) {
+        setImportNotice(`PDF downloaded. Day End archive had issues: ${archiveErrors.join('; ')}`);
+      }
     }
+
+    setShowExportDayPicker(false);
   };
 
   const getStatusColor = (type: string) => {
@@ -80,42 +254,109 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-zinc-950 text-zinc-50 flex flex-col font-sans selection:bg-pink-500 selection:text-white">
       {/* Unified Header */}
       <header className="bg-zinc-900/80 backdrop-blur-md border-b border-cyan-500/20 px-6 py-4 sticky top-0 z-50 shadow-[0_4px_20px_-5px_rgba(34,211,238,0.1)]">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4">
              {/* Dynamic Logo Icon */}
             <div className="relative h-10 w-10 group">
-              <div className={`absolute -inset-1 bg-gradient-to-r ${viewMode === 'SHOPIFY' ? 'from-cyan-500 to-pink-500' : 'from-pink-500 to-cyan-500'} rounded-lg blur opacity-40 group-hover:opacity-100 transition duration-500`}></div>
+              <div className={`absolute -inset-1 bg-gradient-to-r ${viewMode === 'IIF' ? 'from-pink-500 to-cyan-500' : 'from-cyan-500 to-pink-500'} rounded-lg blur opacity-40 group-hover:opacity-100 transition duration-500`}></div>
               <div className="relative h-full w-full bg-zinc-900 rounded-lg border border-cyan-500/50 flex items-center justify-center text-cyan-400 group-hover:text-white transition-colors">
-                {viewMode === 'SHOPIFY' ? <FileText className="w-5 h-5" /> : <Database className="w-5 h-5" />}
+                {viewMode === 'IIF' ? <Database className="w-5 h-5" /> : viewMode === 'SETTINGS' ? <Settings className="w-5 h-5" /> : viewMode === 'EOM' ? <CalendarDays className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
               </div>
             </div>
             <div>
               <h1 className="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-white tracking-tight">
-                {viewMode === 'SHOPIFY' ? `${reportSource === 'SHOPIFY' ? 'Shopify' : 'PayPal'} Reporter` : 'IIF//QBO Converter'}
+                Shopify and PayPal Reporter
               </h1>
             </div>
           </div>
-          
-          <button
-            onClick={() => setViewMode(viewMode === 'SHOPIFY' ? 'IIF' : 'SHOPIFY')}
-            className={`group relative px-6 py-2 bg-zinc-900 border ${viewMode === 'SHOPIFY' ? 'border-pink-500/50 hover:border-pink-500 text-pink-400' : 'border-cyan-500/50 hover:border-cyan-500 text-cyan-400'} hover:text-white rounded flex items-center gap-3 text-xs font-bold font-mono uppercase tracking-wider transition-all shadow-lg overflow-hidden`}
-           >
-            {/* Gloss effect */}
-            <div className="absolute inset-0 bg-white/5 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 skew-x-12"></div>
-            
-            <ArrowLeftRight className="w-4 h-4" />
-            <span>SWITCH TO {viewMode === 'SHOPIFY' ? 'IIF CONVERTER' : 'SHOPIFY REPORT'}</span>
-          </button>
+
+          <div className="flex items-center gap-2">
+            {status === ReportStatus.READY && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSummary(null);
+                  setStatus(ReportStatus.IDLE);
+                  setImportNotice(null);
+                  setViewMode('DAILY');
+                }}
+                className="text-xs font-mono font-bold px-4 py-2 bg-zinc-800 hover:bg-zinc-700 hover:text-white text-zinc-400 border border-zinc-700 hover:border-zinc-500 uppercase tracking-widest transition-all flex items-center gap-2"
+              >
+                <RefreshCcw className="w-3 h-3" /> Upload New
+              </button>
+            )}
+            <div className="flex p-1 bg-zinc-900 rounded-lg border border-zinc-800 shadow-xl">
+              {([
+                { id: 'DAILY' as const, label: 'Daily Report' },
+                { id: 'EOM' as const, label: 'End of Month' },
+                { id: 'IIF' as const, label: 'IIF Converter' },
+              ]).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setViewMode(item.id)}
+                  className={`px-4 py-2 text-[11px] font-bold font-mono uppercase tracking-wider rounded-md transition-all ${
+                    viewMode === item.id ? 'bg-cyan-500 text-black' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setViewMode('SETTINGS')}
+              title="Settings"
+              className={`h-10 w-10 rounded-lg border flex items-center justify-center transition-colors ${
+                viewMode === 'SETTINGS'
+                  ? 'bg-cyan-500 text-black border-cyan-500'
+                  : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-white hover:border-cyan-500/50'
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="flex-1 w-full relative">
-        {viewMode === 'IIF' ? (
+        {viewMode === 'SETTINGS' ? (
+          <SettingsPanel />
+        ) : viewMode === 'IIF' ? (
           <div className="absolute inset-0">
              <IIFConverter />
           </div>
+        ) : viewMode === 'EOM' ? (
+          <div className="max-w-7xl mx-auto p-6">
+            <EOMReconciler />
+          </div>
         ) : (
           <div className="max-w-7xl mx-auto p-6 space-y-8">
+            <div className="flex flex-col items-center">
+              <div className="flex p-1 bg-zinc-900 rounded-lg border border-zinc-800 w-full max-w-sm mx-auto shadow-xl relative">
+                  <button 
+                    onClick={() => { setReportSource('SHOPIFY'); }} 
+                    className={`flex-1 py-2 text-sm font-bold font-mono rounded-md transition-all duration-300 relative z-10 ${reportSource === 'SHOPIFY' ? 'text-black' : 'text-zinc-400'}`}
+                  >
+                    SHOPIFY
+                  </button>
+                  <button 
+                    onClick={() => { setReportSource('PAYPAL'); }} 
+                    className={`flex-1 py-2 text-sm font-bold font-mono rounded-md transition-all duration-300 relative z-10 ${reportSource === 'PAYPAL' ? 'text-black' : 'text-zinc-400'}`}
+                  >
+                    PAYPAL
+                  </button>
+                  
+                  <div 
+                    className={`absolute top-1 bottom-1 rounded-md transition-all duration-300 shadow-lg w-[calc(50%-4px)] ${
+                      reportSource === 'SHOPIFY' 
+                        ? 'left-1 bg-cyan-500' 
+                        : 'translate-x-full bg-blue-500'
+                    }`}
+                  ></div>
+              </div>
+            </div>
+
             {status === ReportStatus.IDLE || status === ReportStatus.ERROR ? (
               <div className="flex-1 flex flex-col items-center justify-center min-h-[400px]">
                 <label className="w-full max-w-xl p-10 border border-dashed rounded-none transition-all duration-300 cursor-pointer flex flex-col items-center justify-center gap-4 group relative overflow-hidden backdrop-blur-sm border-zinc-700 bg-zinc-900/30 hover:border-cyan-500 hover:bg-cyan-950/20 hover:shadow-[0_0_30px_-5px_rgba(34,211,238,0.3)]">
@@ -142,6 +383,9 @@ const App: React.FC = () => {
                         DROP {reportSource} .CSV(s)
                     </p>
                     <p className="text-zinc-500 font-mono text-sm mt-1 group-hover:text-cyan-500/70">or click to browse files</p>
+                    <p className="text-[10px] font-mono text-zinc-600 mt-3 uppercase tracking-wider">
+                      Export to PDF opens a day picker. Rolling monthly PDFs save to the Settings data folder.
+                    </p>
                   </div>
 
                   {error && (
@@ -150,32 +394,6 @@ const App: React.FC = () => {
                     </div>
                   )}
                 </label>
-
-                {/* Report Source Toggle */}
-                <div className="mt-8 flex p-1 bg-zinc-900 rounded-lg border border-zinc-800 w-full max-w-sm mx-auto shadow-xl relative">
-                    <button 
-                      onClick={() => setReportSource('SHOPIFY')} 
-                      className={`flex-1 py-2 text-sm font-bold font-mono rounded-md transition-all duration-300 relative z-10 ${reportSource === 'SHOPIFY' ? 'text-black' : 'text-zinc-400'}`}
-                    >
-                      SHOPIFY
-                    </button>
-                    <button 
-                      onClick={() => setReportSource('PAYPAL')} 
-                      className={`flex-1 py-2 text-sm font-bold font-mono rounded-md transition-all duration-300 relative z-10 ${reportSource === 'PAYPAL' ? 'text-black' : 'text-zinc-400'}`}
-                    >
-                      PAYPAL
-                    </button>
-                    
-                    {/* Sliding Background */}
-                    <div 
-                      className={`absolute top-1 bottom-1 rounded-md transition-all duration-300 shadow-lg w-[calc(50%-4px)] ${
-                        reportSource === 'SHOPIFY' 
-                          ? 'left-1 bg-cyan-500' 
-                          : 'translate-x-full bg-blue-500'
-                      }`}
-                    ></div>
-                </div>
-
               </div>
             ) : status === ReportStatus.PROCESSING ? (
               <div className="flex flex-col items-center justify-center min-h-[70vh]">
@@ -189,6 +407,11 @@ const App: React.FC = () => {
               </div>
             ) : (
               <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
+                {importNotice && (
+                  <div className="mb-6 px-4 py-3 border border-cyan-500/30 bg-cyan-950/30 text-cyan-200 font-mono text-xs">
+                    {importNotice}
+                  </div>
+                )}
                 {/* Stats Overview */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
                   <StatCard 
@@ -226,19 +449,11 @@ const App: React.FC = () => {
 
                 <div className="w-full">
                   <div className="bg-zinc-900/50 border border-zinc-800 backdrop-blur-sm shadow-2xl">
-                    <div className="px-6 py-6 border-b border-zinc-800 flex items-center justify-between bg-zinc-900">
-                      <div>
-                        <h3 className="font-bold text-white text-xl tracking-tight flex items-center gap-2">
-                            <span className="w-2 h-6 bg-cyan-500 block"></span>
-                            LEDGER BREAKDOWN
-                        </h3>
-                      </div>
-                      <button 
-                        onClick={() => { setSummary(null); setStatus(ReportStatus.IDLE); }}
-                        className="text-xs font-mono font-bold px-4 py-2 bg-zinc-800 hover:bg-zinc-700 hover:text-white text-zinc-400 border border-zinc-700 hover:border-zinc-500 uppercase tracking-widest transition-all flex items-center gap-2"
-                      >
-                        <RefreshCcw className="w-3 h-3" /> UPLOAD NEW
-                      </button>
+                    <div className="px-6 py-6 border-b border-zinc-800 bg-zinc-900">
+                      <h3 className="font-bold text-white text-xl tracking-tight flex items-center gap-2">
+                          <span className="w-2 h-6 bg-cyan-500 block"></span>
+                          LEDGER BREAKDOWN
+                      </h3>
                     </div>
                     
                     {summary?.dailyGroups.map((group) => (
@@ -247,7 +462,7 @@ const App: React.FC = () => {
                         <div className="px-6 py-3 bg-zinc-900/80 border-b border-zinc-800 flex items-center justify-between sticky top-0 backdrop-blur-md z-10">
                           <div className="flex items-center gap-3">
                             <CalendarDays className="w-4 h-4 text-cyan-500" />
-                            <span className="text-zinc-200 font-bold font-mono">{group.date}</span>
+                            <span className="text-zinc-200 font-bold font-mono">{formatDisplayDate(group.date)}</span>
                           </div>
                           <div className="flex items-center gap-6">
                             <span className="text-[10px] font-bold font-mono text-zinc-500 uppercase tracking-widest">
@@ -268,6 +483,7 @@ const App: React.FC = () => {
                                 <th className="px-6 py-3">Status</th>
                                 <th className="px-6 py-3">Card Type</th>
                                 <th className="px-6 py-3 text-right">Amount</th>
+                                <th className="px-6 py-3 text-right">Fee</th>
                                 <th className="px-6 py-3 text-center">Verify</th>
                               </tr>
                             </thead>
@@ -301,7 +517,12 @@ const App: React.FC = () => {
                                   </td>
                                   <td className="px-6 py-3 text-right">
                                     <span className={`font-mono font-bold tracking-tight ${t.amount < 0 ? 'text-pink-500' : 'text-zinc-200'}`}>
-                                      ${t.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                      {formatMoney(t.amount)}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-3 text-right">
+                                    <span className={`font-mono tracking-tight ${t.fee < 0 ? 'text-pink-500' : 'text-zinc-400'}`}>
+                                      {formatMoney(t.fee)}
                                     </span>
                                   </td>
                                   <td className="px-6 py-3 text-center">
@@ -321,6 +542,99 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {showExportDayPicker && summary && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg bg-zinc-900 border border-cyan-500/30 shadow-2xl">
+            <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold font-mono uppercase tracking-widest text-cyan-400">
+                  Select Days to Export
+                </h3>
+                <p className="text-[11px] font-mono text-zinc-500 mt-1">
+                  Choose reporting days for this PDF. One file is created.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExportDayPicker(false)}
+                className="text-zinc-500 hover:text-white text-xs font-mono font-bold uppercase"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-6 py-3 border-b border-zinc-800 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedExportDays(summary.dailyGroups.map((group) => group.date))}
+                className="text-[10px] font-mono font-bold uppercase tracking-wider px-3 py-1.5 bg-zinc-950 border border-zinc-700 text-zinc-300 hover:border-cyan-500 hover:text-cyan-400"
+              >
+                Select All
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedExportDays([])}
+                className="text-[10px] font-mono font-bold uppercase tracking-wider px-3 py-1.5 bg-zinc-950 border border-zinc-700 text-zinc-300 hover:border-cyan-500 hover:text-cyan-400"
+              >
+                Clear All
+              </button>
+              <span className="ml-auto text-[10px] font-mono text-zinc-500 self-center">
+                {selectedExportDays.length} of {summary.dailyGroups.length} selected
+              </span>
+            </div>
+
+            <div className="max-h-80 overflow-y-auto px-6 py-4 space-y-2">
+              {summary.dailyGroups.map((group) => {
+                const checked = selectedExportDays.includes(group.date);
+                return (
+                  <label
+                    key={group.date}
+                    className={`flex items-center gap-3 px-3 py-2.5 border cursor-pointer transition-colors ${
+                      checked
+                        ? 'border-cyan-500/40 bg-cyan-950/20'
+                        : 'border-zinc-800 bg-zinc-950/40 hover:border-zinc-700'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleExportDay(group.date)}
+                      className="w-4 h-4 border-zinc-700 bg-zinc-950 text-cyan-500 focus:ring-cyan-500/40 cursor-pointer"
+                    />
+                    <CalendarDays className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
+                    <span className="flex-1 text-sm font-mono font-bold text-zinc-200">{formatDisplayDate(group.date)}</span>
+                    <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">
+                      {group.count} txns
+                    </span>
+                    <span className="text-xs font-mono text-cyan-400">
+                      ${group.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="px-6 py-4 border-t border-zinc-800 flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setShowExportDayPicker(false)}
+                className="px-5 py-2 bg-zinc-950 border border-zinc-700 text-zinc-400 hover:text-white font-mono font-bold text-xs uppercase tracking-wider"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmExportDays}
+                disabled={selectedExportDays.length === 0}
+                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-black font-mono font-bold text-xs uppercase tracking-wider"
+              >
+                Export {selectedExportDays.length} Day{selectedExportDays.length === 1 ? '' : 's'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

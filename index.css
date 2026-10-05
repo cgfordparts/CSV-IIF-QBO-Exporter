@@ -4,4 +4,13 @@
   body {
     @apply bg-slate-950 text-slate-50;
   }
+
+  input[type="date"] {
+    color-scheme: dark;
+  }
+
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    opacity: 0;
+    pointer-events: none;
+  }
 }

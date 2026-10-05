@@ -1,19 +1,19 @@
 {
   "name": "shopify-transaction-reporter",
-  "productName": "Shopify Transaction Reporter",
+  "productName": "Shopify and PayPal Reporter",
   "private": true,
-  "version": "1.0.0",
-  "description": "A tool to audit and organize Shopify sales data.",
+  "version": "1.7.0",
+  "description": "A tool to audit and organize Shopify and PayPal sales data.",
   "main": "electron/main.cjs",
   "type": "module",
   "author": "Yurei",
   "scripts": {
-    "dev": "node node_modules/vite/bin/vite.js",
-    "build": "node node_modules/vite/bin/vite.js build",
-    "preview": "node node_modules/vite/bin/vite.js preview",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "electron:dev": "concurrently -k \"cross-env BROWSER=none npm run dev\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "node node_modules/vite/bin/vite.js build && electron-builder",
-    "build:portable": "node node_modules/vite/bin/vite.js build && electron-packager . \"Shopify Transaction Reporter\" --platform=win32 --arch=x64 --out=release-packager --overwrite"
+    "electron:build": "vite build && electron-builder",
+    "build:portable": "vite build && electron-packager . Shopify-and-PayPal-Reporter --platform=win32 --arch=x64 --out=release-packager --overwrite"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
@@ -44,21 +44,27 @@
   },
   "build": {
     "appId": "com.shopify.reporter",
-    "productName": "ShopifyReporter",
+    "productName": "Shopify and PayPal Reporter",
     "directories": {
-      "output": "release"
+      "output": "release-installer"
     },
     "files": [
       "dist/**/*",
-      "electron/main.cjs",
+      "electron/**/*",
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "signAndEditExecutable": false,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Shopify and PayPal Reporter",
+      "uninstallDisplayName": "Shopify and PayPal Reporter"
     }
   }
 }

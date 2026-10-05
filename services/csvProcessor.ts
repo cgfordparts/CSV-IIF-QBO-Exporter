@@ -1,6 +1,7 @@
 
 import Papa from 'papaparse';
 import { ShopifyTransaction, ReportSummary, DailyGroup } from '../types';
+import { asExpenseFee, formatDisplayDate, getCalendarDateString } from './dateUtils';
 
 /**
  * Enhanced processor that treats the CSV as a ledger.
@@ -43,23 +44,24 @@ export const parseShopifyCSV = (files: FileList | File[]): Promise<ReportSummary
                 const amount = parseFloat(rawAmount.toString().replace(/[^0-9.-]+/g, ""));
                 
                 const rawFee = row['Fee'] || row['Fees'] || row['Transaction Fee'] || '0';
-                const fee = parseFloat(rawFee.toString().replace(/[^0-9.-]+/g, ""));
+                const fee = asExpenseFee(parseFloat(rawFee.toString().replace(/[^0-9.-]+/g, "")) || 0);
 
                 const rawNet = row['Net'] || row['Net Amount'] || '0';
                 let net = parseFloat(rawNet.toString().replace(/[^0-9.-]+/g, ""));
                 
-                // If Net is 0 but we have Amount and Fee, calculate it.
-                // Assuming Fee is often negative in exports. If Fee is positive, we might need logic, 
-                // but usually Net = Amount + Fee (algebraic sum)
+                // Fee is stored as a negative expense. Net = Amount + Fee.
                 if (net === 0 && (amount !== 0 || fee !== 0)) {
                     net = (Math.round(amount * 100) + Math.round(fee * 100)) / 100;
                 }
 
-                const status = row['Status'] || row['Financial Status'] || row['Type'] || 'Unknown';
+                const status = row['Type'] || row['Financial Status'] || row['Status'] || 'Unknown';
                 const customer = row['Billing Name'] || row['Customer'] || row['Source'] || 'Internal/Guest';
                 const currency = row['Currency'] || 'USD';
                 
                 const cardBrand = row['Card Brand'] || row['Brand'] || row['Payment Method'] || row['Card'] || 'N/A';
+                const payoutDate = (row['Payout Date'] || '').toString().trim() || undefined;
+                const payoutId = (row['Payout ID'] || '').toString().trim() || undefined;
+                const payoutStatus = (row['Payout Status'] || '').toString().trim() || undefined;
 
                 if (!isNaN(amount)) {
                   allTransactions.push({
@@ -73,7 +75,10 @@ export const parseShopifyCSV = (files: FileList | File[]): Promise<ReportSummary
                     type: status,
                     cardBrand: cardBrand,
                     currency: currency,
-                    sourceFile: file.name
+                    sourceFile: file.name,
+                    payoutDate,
+                    payoutId,
+                    payoutStatus
                   });
                   globalEntryCounter++;
                 }
@@ -93,7 +98,7 @@ export const parseShopifyCSV = (files: FileList | File[]): Promise<ReportSummary
       // Sort all transactions chronologically (newest to oldest)
       allTransactions.sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
 
-      // Group by Date using the 4:00 PM Reporting Rule
+      // Group by Date
       const dailyGroups = groupTransactionsByDate(allTransactions);
 
       const totalAmount = allTransactions.reduce((sum, t) => sum + Math.round(t.amount * 100), 0) / 100;
@@ -106,7 +111,7 @@ export const parseShopifyCSV = (files: FileList | File[]): Promise<ReportSummary
         const newest = dailyGroups[0].date;
         const oldest = dailyGroups[dailyGroups.length - 1].date;
         
-        dateRange = oldest === newest ? oldest : `${oldest} - ${newest}`;
+        dateRange = oldest === newest ? formatDisplayDate(oldest) : `${formatDisplayDate(oldest)} - ${formatDisplayDate(newest)}`;
       }
 
       resolve({
@@ -163,7 +168,7 @@ export const parsePaypalCSV = (files: FileList | File[]): Promise<ReportSummary>
                 }
 
                 const amount = cleanFloat(row['Gross']);
-                const fee = cleanFloat(row['Fee']);
+                const fee = asExpenseFee(cleanFloat(row['Fee']));
                 const net = cleanFloat(row['Net']);
                 
                 const customer = row['Name'] || 'Unknown';
@@ -201,7 +206,7 @@ export const parsePaypalCSV = (files: FileList | File[]): Promise<ReportSummary>
       // Sort
       allTransactions.sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
 
-      // Group
+      // Group by the actual PayPal CSV transaction date without a reporting cutoff
       const dailyGroups = groupTransactionsByDate(allTransactions);
 
       // Totals
@@ -213,7 +218,7 @@ export const parsePaypalCSV = (files: FileList | File[]): Promise<ReportSummary>
       if (dailyGroups.length > 0) {
         const newest = dailyGroups[0].date;
         const oldest = dailyGroups[dailyGroups.length - 1].date;
-        dateRange = oldest === newest ? oldest : `${oldest} - ${newest}`;
+        dateRange = oldest === newest ? formatDisplayDate(oldest) : `${formatDisplayDate(oldest)} - ${formatDisplayDate(newest)}`;
       }
 
       resolve({
@@ -234,21 +239,13 @@ export const parsePaypalCSV = (files: FileList | File[]): Promise<ReportSummary>
 
 const groupTransactionsByDate = (transactions: ShopifyTransaction[]): DailyGroup[] => {
     const dailyGroups: DailyGroup[] = [];
-    
-    const getReportingDateString = (isoString: string): string => {
-      const date = new Date(isoString);
-      // Rule: 4:00 PM (16:00) and later belongs to the next reporting day
-      if (date.getHours() >= 16) {
-        date.setDate(date.getDate() + 1);
-      }
-      return date.toLocaleDateString();
-    };
 
     if (transactions.length > 0) {
       let currentGroup: DailyGroup | null = null;
 
       transactions.forEach(t => {
-        const tDate = getReportingDateString(t.dateTime);
+        const tDate = getCalendarDateString(t.dateTime);
+        if (!tDate) return;
         
         if (!currentGroup || currentGroup.date !== tDate) {
           if (currentGroup) {

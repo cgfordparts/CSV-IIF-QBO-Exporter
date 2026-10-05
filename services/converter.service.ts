@@ -57,8 +57,8 @@ export class ConverterService {
 
     // Header Discovery
     for (const line of lines) {
-      if (line.trim().startsWith('!SPL')) {
-        const headers = line.trim().split('\t');
+      if (line.startsWith('!SPL')) {
+        const headers = line.split('\t');
         headers.forEach((h, i) => headerMap[h] = i);
         break;
       }
@@ -74,7 +74,7 @@ export class ConverterService {
         continue;
       }
 
-      const parts = line.trim().split('\t');
+      const parts = line.split('\t');
       const getVal = (colName: string) => this.getVal(parts, headerMap, colName);
 
       const rawDocNum = getVal('DOCNUM');
@@ -145,14 +145,14 @@ export class ConverterService {
       // Handle Headers
       if (line.startsWith('!TRNS')) {
         headerMapTrns = {};
-        const headers = line.trim().split('\t');
+        const headers = line.split('\t');
         headers.forEach((h, i) => headerMapTrns[h] = i);
         continue;
       } 
       
       if (line.startsWith('!SPL')) {
         headerMapSpl = {};
-        const headers = line.trim().split('\t');
+        const headers = line.split('\t');
         headers.forEach((h, i) => headerMapSpl[h] = i);
         continue;
       }
@@ -178,7 +178,7 @@ export class ConverterService {
         continue; 
       }
 
-      const parts = line.trim().split('\t');
+      const parts = line.split('\t');
       const getVal = (colName: string) => this.getVal(parts, currentMap, colName);
 
       // Capture Context (TRNS Line Only)
@@ -206,7 +206,7 @@ export class ConverterService {
           }
 
           const rawAmount = getVal('AMOUNT');
-          const amountVal = parseFloat(rawAmount);
+          const amountVal = parseFloat(rawAmount.toString().replace(/[^0-9.-]+/g, ""));
 
           // For Bills, expense lines should be POSITIVE. 
           // If for some reason they are negative (e.g. a credit memo), we preserve the sign.
@@ -259,7 +259,7 @@ export class ConverterService {
   }
 
   private parseAmount(amountStr: string): { debitStr: string, creditStr: string } {
-    let amountFloat = parseFloat(amountStr);
+    let amountFloat = parseFloat(amountStr.toString().replace(/[^0-9.-]+/g, ""));
     if (isNaN(amountFloat)) {
       amountFloat = 0.0;
     }
