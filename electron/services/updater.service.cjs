@@ -11,6 +11,8 @@ const settingsPath = () => path.join(app.getPath('userData'), 'app-settings.json
 
 let activeToken = '';
 let downloadInProgress = false;
+let installWhenDownloaded = false;
+let installStarted = false;
 let status = {
   state: 'idle',
   currentVersion: '',
@@ -178,7 +180,7 @@ const wireUpdater = () => {
       state: 'available',
       version,
       percent: null,
-      message: version ? `Version ${version} is on GitHub.` : 'A newer release is on GitHub.',
+      message: version ? `Version ${version} is ready.` : 'A newer release is ready.',
     });
   });
 
@@ -204,18 +206,24 @@ const wireUpdater = () => {
   autoUpdater.on('update-downloaded', (info) => {
     downloadInProgress = false;
     const version = info?.version || status.version;
+    status.version = version;
+    if (installWhenDownloaded) {
+      installWhenDownloaded = false;
+      startInstall();
+      return;
+    }
     broadcast({
       state: 'downloaded',
       version,
       percent: 100,
-      message: version
-        ? `Version ${version} is downloaded. Restart to install it.`
-        : 'The update is downloaded. Restart to install it.',
+      message: version ? `Version ${version} is ready.` : 'The update is ready.',
     });
   });
 
   autoUpdater.on('error', (error) => {
     downloadInProgress = false;
+    installWhenDownloaded = false;
+    installStarted = false;
     const message = friendlyUpdateError(error);
     broadcast({
       state: 'error',
@@ -314,17 +322,46 @@ const downloadUpdate = async () => {
   return publicStatus();
 };
 
-const installUpdate = () => {
+const startInstall = () => {
   wireUpdater();
-  if (status.state !== 'downloaded') {
+  if (installStarted) return publicStatus();
+  if (!app.isPackaged) {
     return broadcast({
-      message: 'Download the update first.',
+      state: 'unsupported',
+      message: 'Updates run in the installed app. Install the setup once, paste the GitHub key there, and later releases install from Update.',
     });
   }
+  installStarted = true;
+  if (process.platform === 'win32') {
+    autoUpdater.installDirectory = path.dirname(process.execPath);
+  }
+  const version = status.version;
+  broadcast({
+    state: 'installing',
+    version,
+    percent: 100,
+    message: version
+      ? `Installing ${version}. The app will close and reopen in the same taskbar spot.`
+      : 'Installing the update. The app will close and reopen in the same taskbar spot.',
+  });
   setImmediate(() => {
     autoUpdater.quitAndInstall(true, true);
   });
   return publicStatus();
+};
+
+const applyUpdate = async () => {
+  wireUpdater();
+  if (status.state === 'downloaded' || status.state === 'installing') return startInstall();
+  if (status.state !== 'available' && status.state !== 'downloading') {
+    installWhenDownloaded = false;
+    return broadcast({
+      message: status.message || 'Check for an update first.',
+    });
+  }
+  installWhenDownloaded = true;
+  if (downloadInProgress || status.state === 'downloading') return publicStatus();
+  return downloadUpdate();
 };
 
 const saveToken = async (rawToken) => {
@@ -392,7 +429,8 @@ const registerUpdateIpc = () => {
 
   safeHandle('updates:check', async () => checkForUpdates());
   safeHandle('updates:download', async () => downloadUpdate());
-  safeHandle('updates:install', async () => installUpdate());
+  safeHandle('updates:install', async () => startInstall());
+  safeHandle('updates:apply', async () => applyUpdate());
 };
 
 const scheduleStartupCheck = () => {

@@ -133,7 +133,7 @@ export const SettingsPanel: React.FC = () => {
     }
   };
 
-  const runUpdateAction = async (channel: 'updates:check' | 'updates:download' | 'updates:install') => {
+  const runUpdateAction = async (channel: 'updates:check' | 'updates:apply') => {
     setUpdateBusy(true);
     setUpdateError(null);
     try {
@@ -312,7 +312,7 @@ export const SettingsPanel: React.FC = () => {
             Updates
           </h3>
           <p className="text-sm text-zinc-400 mt-2">
-            Paste the GitHub key for cgfordparts/CSV-IIF-QBO-Exporter. The key stays on this computer. A push to main publishes a release when the version in package.json is new, and this app downloads that release.
+            Paste the GitHub key for cgfordparts/CSV-IIF-QBO-Exporter. The key stays on this computer. Click Update and the app downloads the new release, installs it, and reopens in the same taskbar spot.
           </p>
           <p className="text-xs font-mono text-zinc-500 mt-3">
             {(updateStatus?.currentVersion || settings?.appVersion)
@@ -362,30 +362,20 @@ export const SettingsPanel: React.FC = () => {
           >
             Check for updates
           </button>
-          {updateStatus?.state === 'available' && (
+          {(updateStatus?.state === 'available' || updateStatus?.state === 'downloaded') && (
             <button
               type="button"
-              onClick={() => runUpdateAction('updates:download')}
+              onClick={() => runUpdateAction('updates:apply')}
               disabled={updateBusy}
               className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black text-xs font-mono font-bold uppercase tracking-widest flex items-center gap-2"
             >
               <Download className="w-3.5 h-3.5" />
-              Download
-            </button>
-          )}
-          {updateStatus?.state === 'downloaded' && (
-            <button
-              type="button"
-              onClick={() => runUpdateAction('updates:install')}
-              disabled={updateBusy}
-              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black text-xs font-mono font-bold uppercase tracking-widest"
-            >
-              Restart and install
+              Update
             </button>
           )}
         </div>
 
-        {updateStatus?.state === 'downloading' && (
+        {(updateStatus?.state === 'downloading' || updateStatus?.state === 'installing') && (
           <div className="h-1 bg-zinc-800">
             <div className="h-1 bg-cyan-400" style={{ width: `${updateStatus.percent || 0}%` }} />
           </div>

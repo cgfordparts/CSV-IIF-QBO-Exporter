@@ -153,7 +153,8 @@ const createBrowserIpcMock = (): IpcBridge => ({
       case 'updates:save-token':
       case 'updates:check':
       case 'updates:download':
-      case 'updates:install': {
+      case 'updates:install':
+      case 'updates:apply': {
         return {
           success: false,
           state: 'unsupported',

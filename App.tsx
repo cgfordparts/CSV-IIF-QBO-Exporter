@@ -73,7 +73,7 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const runUpdate = async (channel: 'updates:download' | 'updates:install') => {
+  const runUpdate = async (channel: 'updates:apply') => {
     setUpdateBusy(true);
     try {
       const result = await ipc.invoke(channel);
@@ -91,7 +91,7 @@ const App: React.FC = () => {
 
   const showUpdateBanner = Boolean(
     updateNotice && (
-      ['available', 'downloading', 'downloaded'].includes(updateNotice.state) ||
+      ['available', 'downloading', 'downloaded', 'installing'].includes(updateNotice.state) ||
       (updateNotice.state === 'error' && updateNotice.announce)
     )
   );
@@ -414,24 +414,14 @@ const App: React.FC = () => {
               {updateNotice.message || 'A newer release is on GitHub.'}
             </p>
             <div className="flex gap-2">
-              {updateNotice.state === 'available' && (
+              {(updateNotice.state === 'available' || updateNotice.state === 'downloaded') && (
                 <button
                   type="button"
                   disabled={updateBusy}
-                  onClick={() => runUpdate('updates:download')}
+                  onClick={() => runUpdate('updates:apply')}
                   className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-black text-xs font-mono font-bold uppercase tracking-widest"
                 >
-                  Download
-                </button>
-              )}
-              {updateNotice.state === 'downloaded' && (
-                <button
-                  type="button"
-                  disabled={updateBusy}
-                  onClick={() => runUpdate('updates:install')}
-                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-black text-xs font-mono font-bold uppercase tracking-widest"
-                >
-                  Restart and install
+                  Update
                 </button>
               )}
               {updateNotice.state === 'error' && (
@@ -445,7 +435,7 @@ const App: React.FC = () => {
               )}
             </div>
           </div>
-          {updateNotice.state === 'downloading' && (
+          {(updateNotice.state === 'downloading' || updateNotice.state === 'installing') && (
             <div className="max-w-7xl mx-auto mt-3 h-1 bg-zinc-800">
               <div className="h-1 bg-cyan-400" style={{ width: `${updateNotice.percent || 0}%` }} />
             </div>

@@ -2,7 +2,7 @@
   "name": "shopify-transaction-reporter",
   "productName": "Shopify and PayPal Reporter",
   "private": true,
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "A tool to audit and organize Shopify and PayPal sales data.",
   "main": "electron/main.cjs",
   "type": "module",
@@ -70,6 +70,7 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,

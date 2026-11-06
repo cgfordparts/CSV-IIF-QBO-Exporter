@@ -28,6 +28,7 @@ const invokeChannels = new Set([
   'updates:check',
   'updates:download',
   'updates:install',
+  'updates:apply',
 ]);
 
 const listenChannels = new Set([
