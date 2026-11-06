@@ -23,11 +23,17 @@ const invokeChannels = new Set([
   'archive:raw-csv',
   'archive:day-end-pdf',
   'pdf:save-rolling',
+  'updates:get-status',
+  'updates:save-token',
+  'updates:check',
+  'updates:download',
+  'updates:install',
 ]);
 
 const listenChannels = new Set([
   'qb:auth-success',
   'qb:auth-failure',
+  'updates:status',
 ]);
 
 contextBridge.exposeInMainWorld('electronAPI', {

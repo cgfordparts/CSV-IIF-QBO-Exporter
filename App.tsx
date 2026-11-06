@@ -24,7 +24,7 @@ import { IIFConverter } from './components/IIFConverter';
 import { EOMReconciler } from './components/EOMReconciler';
 import { SettingsPanel } from './components/SettingsPanel';
 import { assignBankDates, payoutsFromShopifyHistory } from './services/eom.service';
-import { getIpcRenderer } from './services/electronIpc';
+import { getIpcRenderer, UpdateStatus } from './services/electronIpc';
 
 const ipc = getIpcRenderer();
 
@@ -50,6 +50,8 @@ const App: React.FC = () => {
   const [showExportDayPicker, setShowExportDayPicker] = useState(false);
   const [selectedExportDays, setSelectedExportDays] = useState<string[]>([]);
   const [importNotice, setImportNotice] = useState<string | null>(null);
+  const [updateNotice, setUpdateNotice] = useState<UpdateStatus | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   useEffect(() => {
     ipc.invoke('settings:get').then((res) => {
@@ -58,6 +60,41 @@ const App: React.FC = () => {
       setHasCustomDataFolder(false);
     });
   }, [viewMode]);
+
+  useEffect(() => {
+    const unsubscribe = ipc.on('updates:status', (next: UpdateStatus) => {
+      setUpdateNotice(next);
+    });
+    ipc.invoke('updates:get-status').then((next: UpdateStatus) => {
+      if (next) setUpdateNotice(next);
+    }).catch(() => {});
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, []);
+
+  const runUpdate = async (channel: 'updates:download' | 'updates:install') => {
+    setUpdateBusy(true);
+    try {
+      const result = await ipc.invoke(channel);
+      if (result) setUpdateNotice(result);
+    } catch (err) {
+      setUpdateNotice((current) => ({
+        ...(current || {}),
+        state: 'error',
+        message: err instanceof Error ? err.message : 'Update failed.',
+      }));
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const showUpdateBanner = Boolean(
+    updateNotice && (
+      ['available', 'downloading', 'downloaded'].includes(updateNotice.state) ||
+      (updateNotice.state === 'error' && updateNotice.announce)
+    )
+  );
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -369,6 +406,52 @@ const App: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {showUpdateBanner && updateNotice && (
+        <div className="bg-zinc-900 border-b border-cyan-500/30 px-6 py-3">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+            <p className={`text-sm font-mono ${updateNotice.state === 'error' ? 'text-pink-400' : 'text-cyan-300'}`}>
+              {updateNotice.message || 'A newer release is on GitHub.'}
+            </p>
+            <div className="flex gap-2">
+              {updateNotice.state === 'available' && (
+                <button
+                  type="button"
+                  disabled={updateBusy}
+                  onClick={() => runUpdate('updates:download')}
+                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-black text-xs font-mono font-bold uppercase tracking-widest"
+                >
+                  Download
+                </button>
+              )}
+              {updateNotice.state === 'downloaded' && (
+                <button
+                  type="button"
+                  disabled={updateBusy}
+                  onClick={() => runUpdate('updates:install')}
+                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-black text-xs font-mono font-bold uppercase tracking-widest"
+                >
+                  Restart and install
+                </button>
+              )}
+              {updateNotice.state === 'error' && (
+                <button
+                  type="button"
+                  onClick={() => setViewMode('SETTINGS')}
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-mono font-bold uppercase tracking-widest"
+                >
+                  Open Settings
+                </button>
+              )}
+            </div>
+          </div>
+          {updateNotice.state === 'downloading' && (
+            <div className="max-w-7xl mx-auto mt-3 h-1 bg-zinc-800">
+              <div className="h-1 bg-cyan-400" style={{ width: `${updateNotice.percent || 0}%` }} />
+            </div>
+          )}
+        </div>
+      )}
 
       <main className="flex-1 w-full relative">
         {viewMode === 'SETTINGS' ? (

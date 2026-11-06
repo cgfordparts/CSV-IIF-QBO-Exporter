@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { FolderOpen, RotateCcw, Settings as SettingsIcon, Undo2 } from 'lucide-react';
+import { Download, FolderOpen, RefreshCcw, RotateCcw, Settings as SettingsIcon, Undo2 } from 'lucide-react';
 import { formatDisplayDate, formatMoney } from '../services/dateUtils';
 import { assignBankDates, payoutsFromShopifyHistory } from '../services/eom.service';
 import { generateRollingPDF, getImportRollingMonths } from '../services/pdfGenerator';
-import { getIpcRenderer } from '../services/electronIpc';
+import { getIpcRenderer, UpdateStatus } from '../services/electronIpc';
 
 const ipc = getIpcRenderer();
 
@@ -11,6 +11,9 @@ type DataSettings = {
   dataDirectory: string;
   isDefault: boolean;
   csvCount: number;
+  githubTokenSaved: boolean;
+  appVersion: string;
+  updatesSupported: boolean;
 };
 
 type ImportRow = {
@@ -54,18 +57,27 @@ export const SettingsPanel: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   const loadSettings = useCallback(async () => {
-    const [result, history] = await Promise.all([
+    const [result, history, updates] = await Promise.all([
       ipc.invoke('settings:get'),
       ipc.invoke('history:list'),
+      ipc.invoke('updates:get-status'),
     ]);
     setSettings({
       dataDirectory: result?.dataDirectory || '',
       isDefault: Boolean(result?.isDefault),
       csvCount: Number(result?.csvCount || 0),
+      githubTokenSaved: Boolean(result?.githubTokenSaved),
+      appVersion: result?.appVersion || '',
+      updatesSupported: Boolean(result?.updatesSupported),
     });
     setImports(Array.isArray(history?.imports) ? history.imports : []);
+    if (updates) setUpdateStatus(updates);
   }, []);
 
   useEffect(() => {
@@ -73,6 +85,67 @@ export const SettingsPanel: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to load settings.');
     });
   }, [loadSettings]);
+
+  useEffect(() => {
+    const unsubscribe = ipc.on('updates:status', (next: UpdateStatus) => {
+      setUpdateStatus(next);
+    });
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, []);
+
+  const saveGithubKey = async () => {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      const result = await ipc.invoke('updates:save-token', { token: tokenDraft });
+      if (!result?.success) {
+        setUpdateError(result?.error || 'Could not save the GitHub key.');
+        return;
+      }
+      setTokenDraft('');
+      setUpdateStatus(result);
+      setSettings((current) => current ? { ...current, githubTokenSaved: Boolean(result.tokenSaved) } : current);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : 'Could not save the GitHub key.');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const removeGithubKey = async () => {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      const result = await ipc.invoke('updates:save-token', { token: '' });
+      if (!result?.success) {
+        setUpdateError(result?.error || 'Could not remove the GitHub key.');
+        return;
+      }
+      setTokenDraft('');
+      setUpdateStatus(result);
+      setSettings((current) => current ? { ...current, githubTokenSaved: false } : current);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : 'Could not remove the GitHub key.');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const runUpdateAction = async (channel: 'updates:check' | 'updates:download' | 'updates:install') => {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      const result = await ipc.invoke(channel);
+      if (result) setUpdateStatus(result);
+      if (result?.error) setUpdateError(result.error);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : 'Update request failed.');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
 
   const chooseFolder = async () => {
     setBusy(true);
@@ -179,7 +252,7 @@ export const SettingsPanel: React.FC = () => {
           Settings
         </h2>
         <p className="text-sm text-zinc-400 mt-2">
-          Choose where this app keeps Shopify payout CSVs, PayPal activity CSVs, rolling monthly PDFs, RAW CSV copies, and Day End PDFs. Shopify End of Month reads payout files named like 07-13-2026.csv from the Shopify subfolder (Daily Report RAW files are ignored). PayPal End of Month reads the Paypal subfolder.
+          Choose where this app keeps day-end CSVs, monthly PDFs, and Day End PDFs. End of Month reads the Shopify and PayPal files saved from those day-end imports, including the neighboring months, and keeps the deposits whose bank date falls in the statement month.
         </p>
       </div>
 
@@ -192,7 +265,7 @@ export const SettingsPanel: React.FC = () => {
           <p className="text-xs text-zinc-500 mt-3">
             {settings?.isDefault
               ? 'Using the application default location. Import will create month folders here.'
-              : 'Using a custom folder. Shopify End of Month reads payout CSVs from the Shopify subfolder. PayPal End of Month reads activity CSVs from the Paypal subfolder. Daily Report imports update the rolling monthly PDF here. RAW sale-date copies are not used for Wells Fargo matching.'}
+              : 'Using a custom folder. Day-end imports save Shopify and PayPal CSVs here. End of Month totals those saved files for the statement month. Daily Report imports also update the rolling monthly PDF here.'}
             {settings ? ` ${settings.csvCount} CSV file${settings.csvCount === 1 ? '' : 's'} found.` : ''}
           </p>
         </div>
@@ -230,6 +303,105 @@ export const SettingsPanel: React.FC = () => {
 
         {error && <p className="text-sm font-mono text-pink-400">{error}</p>}
         {message && !error && <p className="text-sm font-mono text-cyan-300">{message}</p>}
+      </section>
+
+      <section className="bg-zinc-900 border border-zinc-800 p-6 space-y-5">
+        <div>
+          <h3 className="font-bold tracking-tight flex items-center gap-2">
+            <RefreshCcw className="w-4 h-4 text-cyan-400" />
+            Updates
+          </h3>
+          <p className="text-sm text-zinc-400 mt-2">
+            Paste the GitHub key for cgfordparts/CSV-IIF-QBO-Exporter. The key stays on this computer. A push to main publishes a release when the version in package.json is new, and this app downloads that release.
+          </p>
+          <p className="text-xs font-mono text-zinc-500 mt-3">
+            {(updateStatus?.currentVersion || settings?.appVersion)
+              ? `This copy is ${updateStatus?.currentVersion || settings?.appVersion}. `
+              : ''}
+            {settings?.githubTokenSaved ? 'GitHub key saved.' : 'No GitHub key saved yet.'}
+          </p>
+        </div>
+
+        <label className="block">
+          <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500">GitHub key</span>
+          <input
+            type="password"
+            value={tokenDraft}
+            onChange={(event) => setTokenDraft(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={settings?.githubTokenSaved ? 'Paste a new key to replace the saved one' : 'Paste the GitHub key'}
+            className="mt-2 w-full bg-zinc-950 border border-zinc-700 px-4 py-3 font-mono text-sm text-cyan-300 outline-none focus:border-cyan-500"
+          />
+        </label>
+
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={saveGithubKey}
+            disabled={updateBusy || tokenDraft.trim().length === 0}
+            className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-black text-xs font-mono font-bold uppercase tracking-widest"
+          >
+            Save key
+          </button>
+          {settings?.githubTokenSaved && (
+            <button
+              type="button"
+              onClick={removeGithubKey}
+              disabled={updateBusy}
+              className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-mono font-bold uppercase tracking-widest"
+            >
+              Remove key
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => runUpdateAction('updates:check')}
+            disabled={updateBusy}
+            className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-mono font-bold uppercase tracking-widest"
+          >
+            Check for updates
+          </button>
+          {updateStatus?.state === 'available' && (
+            <button
+              type="button"
+              onClick={() => runUpdateAction('updates:download')}
+              disabled={updateBusy}
+              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black text-xs font-mono font-bold uppercase tracking-widest flex items-center gap-2"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download
+            </button>
+          )}
+          {updateStatus?.state === 'downloaded' && (
+            <button
+              type="button"
+              onClick={() => runUpdateAction('updates:install')}
+              disabled={updateBusy}
+              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black text-xs font-mono font-bold uppercase tracking-widest"
+            >
+              Restart and install
+            </button>
+          )}
+        </div>
+
+        {updateStatus?.state === 'downloading' && (
+          <div className="h-1 bg-zinc-800">
+            <div className="h-1 bg-cyan-400" style={{ width: `${updateStatus.percent || 0}%` }} />
+          </div>
+        )}
+
+        {updateError && <p className="text-sm font-mono text-pink-400">{updateError}</p>}
+        {updateStatus?.message && !updateError && (
+          <p className={`text-sm font-mono ${updateStatus.state === 'error' ? 'text-pink-400' : 'text-cyan-300'}`}>
+            {updateStatus.message}
+          </p>
+        )}
+        {updateStatus && !updateStatus.updatesSupported && settings && !settings.updatesSupported && (
+          <p className="text-xs font-mono text-zinc-500">
+            The installed setup is the copy that downloads releases. Paste the key there after the next install.
+          </p>
+        )}
       </section>
 
       <section className="bg-zinc-900 border border-zinc-800 p-6 space-y-4">

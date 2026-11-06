@@ -99,6 +99,25 @@ export function asExpenseFee(value: number): number {
   return value > 0 ? -value : value;
 }
 
+/** Clock time in the CSV, newest first. Same clock time falls back to order number. */
+export function compareTransactionTimeNewestFirst(
+  a: { dateTime?: string; orderNumber?: string },
+  b: { dateTime?: string; orderNumber?: string }
+): number {
+  const key = (value?: string) => {
+    const raw = String(value || '');
+    const day = getCalendarDateString(raw) || '';
+    const match = raw.match(/(?:T|\s)(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    const hour = match ? match[1].padStart(2, '0') : '00';
+    const minute = match ? match[2] : '00';
+    const second = match?.[3] || '00';
+    return `${day}T${hour}:${minute}:${second}`;
+  };
+  const byTime = key(b.dateTime).localeCompare(key(a.dateTime));
+  if (byTime !== 0) return byTime;
+  return compareOrderNumberNewestFirst(a, b);
+}
+
 /** Order #: newest (highest) first, oldest last. */
 export function compareOrderNumberNewestFirst(
   a: { orderNumber?: string },

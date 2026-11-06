@@ -6,6 +6,19 @@ export type ArchiveRecord = {
   payoutDate?: string;
 };
 
+export type UpdateStatus = {
+  state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error' | 'unsupported' | string;
+  currentVersion?: string;
+  version?: string | null;
+  percent?: number | null;
+  message?: string | null;
+  tokenSaved?: boolean;
+  updatesSupported?: boolean;
+  announce?: boolean;
+  success?: boolean;
+  error?: string;
+};
+
 type IpcBridge = {
   invoke: (channel: string, ...args: unknown[]) => Promise<any>;
   on: (channel: string, listener: (...args: any[]) => void) => (() => void) | void;
@@ -125,6 +138,30 @@ const createBrowserIpcMock = (): IpcBridge => ({
       case 'archive:day-end-pdf':
       case 'pdf:save-rolling': {
         return { success: false, error: 'Choose a data folder in the desktop app.' };
+      }
+      case 'updates:get-status': {
+        return {
+          state: 'unsupported',
+          currentVersion: '',
+          version: null,
+          percent: null,
+          message: null,
+          tokenSaved: false,
+          updatesSupported: false,
+        } satisfies UpdateStatus;
+      }
+      case 'updates:save-token':
+      case 'updates:check':
+      case 'updates:download':
+      case 'updates:install': {
+        return {
+          success: false,
+          state: 'unsupported',
+          updatesSupported: false,
+          tokenSaved: false,
+          error: 'Save the GitHub key and check for updates in the installed desktop app.',
+          message: 'Save the GitHub key and check for updates in the installed desktop app.',
+        } satisfies UpdateStatus;
       }
       default:
         return {};

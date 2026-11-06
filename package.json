@@ -7,16 +7,21 @@
   "main": "electron/main.cjs",
   "type": "module",
   "author": "Yurei",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cgfordparts/CSV-IIF-QBO-Exporter.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"cross-env BROWSER=none npm run dev\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "vite build && electron-builder",
+    "electron:build": "vite build && electron-builder --publish never",
     "build:portable": "vite build && electron-packager . Shopify-and-PayPal-Reporter --platform=win32 --arch=x64 --out=release-packager --overwrite"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
+    "electron-updater": "^6.8.11",
     "intuit-oauth": "^4.2.2",
     "jspdf": "^3.0.4",
     "jspdf-autotable": "^5.0.2",
@@ -56,7 +61,12 @@
     "win": {
       "target": "nsis",
       "signAndEditExecutable": false,
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "artifactName": "Shopify-and-PayPal-Reporter-Setup-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "cgfordparts",
+      "repo": "CSV-IIF-QBO-Exporter"
     },
     "nsis": {
       "oneClick": false,

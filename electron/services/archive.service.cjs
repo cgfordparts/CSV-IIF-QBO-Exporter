@@ -110,15 +110,6 @@ function calendarDayFromShopifyDateTime(dateTime) {
   return calendarDayFromPaypalDate(dateTime);
 }
 
-function isPaypalSkippedType(type) {
-  const t = String(type || '').trim();
-  return (
-    t === 'General Withdrawal' ||
-    t === 'User Initiated Withdrawal' ||
-    t === 'Bank Deposit to PP Account'
-  );
-}
-
 function uniqueShopifyPath(dir, baseName) {
   let candidate = path.join(dir, `${baseName}.csv`);
   if (!fs.existsSync(candidate)) return candidate;
@@ -231,8 +222,6 @@ function archivePaypalRawCsv(fileContent) {
   const byDay = new Map();
   for (const row of rows) {
     if (!row || row.length === 0) continue;
-    const type = typeIdx >= 0 ? String(row[typeIdx] || '').trim() : '';
-    if (isPaypalSkippedType(type)) continue;
     const day = calendarDayFromPaypalDate(row[dateIdx]);
     if (!day) continue;
     if (!byDay.has(day)) byDay.set(day, []);

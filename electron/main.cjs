@@ -7,6 +7,7 @@ app.setPath('userData', path.join(app.getPath('appData'), 'Shopify Transaction R
 
 const historyService = require('./services/history.service.cjs');
 const archiveService = require('./services/archive.service.cjs');
+const updaterService = require('./services/updater.service.cjs');
 
 const APP_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:3000';
 const isDevelopment = process.env.NODE_ENV === 'development';
@@ -119,28 +120,20 @@ const walkCsvFiles = async (dir, acc = []) => {
 };
 
 const isDailyReportMonthDir = (name) => /^\d{4}-\d{2} \(/i.test(String(name || ''));
-const isSkippedShopifyDir = (name) => {
-  const lower = String(name || '').toLowerCase();
-  return lower === 'raw' || lower === 'day end' || lower === 'paypal' || lower === 'errors';
-};
-const isShopifyPayoutCsvName = (name) => /^\d{2}-\d{2}-\d{4}(?:\(\d+\))?\.csv$/i.test(String(name || ''));
 
-const walkShopifyPayoutCsvs = async (dir, acc = []) => {
-  let entries = [];
+const walkMonthRawCsvs = async (dataDirectory, sourceFolderName) => {
+  const acc = [];
+  let months = [];
   try {
-    entries = await fsp.readdir(dir, { withFileTypes: true });
+    months = await fsp.readdir(dataDirectory, { withFileTypes: true });
   } catch {
     return acc;
   }
 
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (isSkippedShopifyDir(entry.name) || isDailyReportMonthDir(entry.name)) continue;
-      await walkShopifyPayoutCsvs(fullPath, acc);
-    } else if (entry.isFile() && isShopifyPayoutCsvName(entry.name)) {
-      acc.push(fullPath);
-    }
+  for (const entry of months) {
+    if (!entry.isDirectory() || !isDailyReportMonthDir(entry.name)) continue;
+    const rawSource = path.join(dataDirectory, entry.name, 'RAW', sourceFolderName);
+    await walkCsvFiles(rawSource, acc);
   }
 
   return acc;
@@ -173,12 +166,16 @@ const safeHandle = (channel, handler) => {
 
 const registerSettingsIpc = () => {
   safeHandle('settings:get', async () => {
+    const stored = await readAppSettings();
     const dataDirectory = await getDataDirectory();
     const csvFiles = await walkCsvFiles(dataDirectory);
     return {
       dataDirectory,
       isDefault: dataDirectory === defaultDataDirectory(),
       csvCount: csvFiles.length,
+      githubTokenSaved: typeof stored.githubToken === 'string' && stored.githubToken.trim().length > 0,
+      appVersion: app.getVersion(),
+      updatesSupported: app.isPackaged,
     };
   });
 
@@ -260,7 +257,7 @@ const safeRelativePath = (relativePath, filename, payoutDate) => {
 const registerEomIpc = () => {
   safeHandle('eom:list-archive', async () => {
     const dataDirectory = await getDataDirectory();
-    const csvPaths = await walkShopifyPayoutCsvs(dataDirectory);
+    const csvPaths = await walkMonthRawCsvs(dataDirectory, 'Shopify');
     const records = [];
 
     for (const filePath of csvPaths) {
@@ -341,8 +338,7 @@ const registerEomIpc = () => {
 
   safeHandle('paypal:list-archive', async () => {
     const dataDirectory = await getDataDirectory();
-    const paypalDir = path.join(dataDirectory, 'Paypal');
-    const csvPaths = await walkCsvFiles(paypalDir);
+    const csvPaths = await walkMonthRawCsvs(dataDirectory, 'PayPal');
     const records = [];
 
     for (const filePath of csvPaths) {
@@ -357,7 +353,7 @@ const registerEomIpc = () => {
       }
     }
 
-    return { records, dataDirectory: paypalDir };
+    return { records, dataDirectory };
   });
 
   safeHandle('paypal:import', async (_event, incoming = []) => {
@@ -494,9 +490,11 @@ registerSettingsIpc();
 registerEomIpc();
 registerHistoryIpc();
 registerArchiveIpc();
+updaterService.registerUpdateIpc();
 
 app.whenReady().then(() => {
   createMainWindow();
+  updaterService.scheduleStartupCheck();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

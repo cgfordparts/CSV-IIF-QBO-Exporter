@@ -541,7 +541,7 @@ export const EOMReconciler: React.FC = () => {
           {paypalFiles.length > 0
             ? ` · ${paypalFiles.length} PayPal activity file${paypalFiles.length === 1 ? '' : 's'} · ${paypalParsed.withdrawals.filter((item) => item.payoutStatus !== 'in_transit').length} withdrawals`
             : ' · no PayPal activity files'}
-          . Import Shopify payout CSVs named like 07-13-2026.csv, or the full PayPal activity export. Daily Report RAW files are not used for Wells Fargo matching.
+          . Uses the Shopify and PayPal CSVs saved from day-end imports, including neighboring months. A deposit counts when its bank date falls in this statement month.
           {shopifyDirectory ? ` Shopify folder: ${shopifyDirectory}.` : ''}
           {paypalDirectory ? ` PayPal folder: ${paypalDirectory}.` : ''}
         </p>

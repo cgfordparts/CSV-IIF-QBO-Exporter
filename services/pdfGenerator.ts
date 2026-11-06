@@ -9,7 +9,8 @@ import {
   formatDisplayDate,
   formatDisplayDateRange,
   formatClockTime,
-  compareOrderNumberNewestFirst
+  compareOrderNumberNewestFirst,
+  compareTransactionTimeNewestFirst
 } from './dateUtils';
 import { payoutsFromShopifyHistory, reconcileEom, sumCalendarDays } from './eom.service';
 
@@ -49,96 +50,20 @@ export const generateTransactionPDF = (
     doc.setTextColor(100);
     doc.text(`Calendar Date: ${formatDisplayDate(group.date)}`, pageWidth / 2, 30, { align: 'center' });
 
-    const tableBody: any[] = [];
-
-    const transactionsByFile: Record<string, ShopifyTransaction[]> = {};
-    group.transactions.forEach((t) => {
-      const key = t.sourceFile || 'Unknown Source';
-      if (!transactionsByFile[key]) {
-        transactionsByFile[key] = [];
-      }
-      transactionsByFile[key].push(t);
-    });
-
-    Object.entries(transactionsByFile).forEach(([fileName, txns]) => {
-      txns.sort(compareOrderNumberNewestFirst);
-
-      const fileSubtotal = txns.reduce((sum, t) => sum + Math.round(t.amount * 100), 0) / 100;
-      const fileFees = txns.reduce((sum, t) => sum + Math.round(t.fee * 100), 0) / 100;
-      const fileNet = txns.reduce((sum, t) => sum + Math.round(t.net * 100), 0) / 100;
-
-      tableBody.push([
-        {
-          content: `CSV batch: ${fileName}`,
-          colSpan: 9,
-          styles: {
-            fillColor: [226, 232, 240],
-            textColor: [30, 41, 59],
-            fontStyle: 'bold'
-          }
-        }
+    const tableBody: any[] = group.transactions
+      .slice()
+      .sort(compareTransactionTimeNewestFirst)
+      .map((t) => [
+        formatClockTime(t.dateTime),
+        t.orderNumber,
+        t.customerName,
+        t.type,
+        t.cardBrand,
+        `$${t.amount.toFixed(2)}`,
+        formatMoney(t.fee),
+        `$${t.net.toFixed(2)}`,
+        '[  ]'
       ]);
-
-      txns.forEach((t) => {
-        tableBody.push([
-          formatClockTime(t.dateTime),
-          t.orderNumber,
-          t.customerName,
-          t.type,
-          t.cardBrand,
-          `$${t.amount.toFixed(2)}`,
-          formatMoney(t.fee),
-          `$${t.net.toFixed(2)}`,
-          '[  ]'
-        ]);
-      });
-
-      tableBody.push([
-        {
-          content: `Batch Subtotal — ${fileName} (${txns.length} txns)`,
-          colSpan: 5,
-          styles: {
-            fillColor: [248, 250, 252],
-            textColor: [30, 41, 59],
-            fontStyle: 'bold',
-            halign: 'right'
-          }
-        },
-        {
-          content: `$${fileSubtotal.toFixed(2)}`,
-          styles: {
-            fillColor: [248, 250, 252],
-            textColor: [30, 41, 59],
-            fontStyle: 'bold',
-            halign: 'right'
-          }
-        },
-        {
-          content: formatMoney(fileFees),
-          styles: {
-            fillColor: [248, 250, 252],
-            textColor: [100, 116, 139],
-            fontStyle: 'bold',
-            halign: 'right'
-          }
-        },
-        {
-          content: `$${fileNet.toFixed(2)}`,
-          styles: {
-            fillColor: [248, 250, 252],
-            textColor: [30, 41, 59],
-            fontStyle: 'bold',
-            halign: 'right'
-          }
-        },
-        {
-          content: '',
-          styles: {
-            fillColor: [248, 250, 252]
-          }
-        }
-      ]);
-    });
 
     autoTable(doc, {
       startY: 45,
@@ -229,66 +154,20 @@ export const generateDayEndPDFDataUri = (
   doc.setTextColor(100);
   doc.text(`Calendar Date: ${formatDisplayDate(group.date)}`, pageWidth / 2, 30, { align: 'center' });
 
-  const tableBody: any[] = [];
-  const transactionsByFile: Record<string, ShopifyTransaction[]> = {};
-  group.transactions.forEach((t) => {
-    const key = t.sourceFile || 'Unknown Source';
-    if (!transactionsByFile[key]) transactionsByFile[key] = [];
-    transactionsByFile[key].push(t);
-  });
-
-  Object.entries(transactionsByFile).forEach(([fileName, txns]) => {
-    txns.sort(compareOrderNumberNewestFirst);
-    const fileSubtotal = txns.reduce((sum, t) => sum + Math.round(t.amount * 100), 0) / 100;
-    const fileFees = txns.reduce((sum, t) => sum + Math.round(t.fee * 100), 0) / 100;
-    const fileNet = txns.reduce((sum, t) => sum + Math.round(t.net * 100), 0) / 100;
-
-    tableBody.push([
-      {
-        content: `CSV batch: ${fileName}`,
-        colSpan: 9,
-        styles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontStyle: 'bold' }
-      }
+  const tableBody: any[] = group.transactions
+    .slice()
+    .sort(compareTransactionTimeNewestFirst)
+    .map((t) => [
+      formatClockTime(t.dateTime),
+      t.orderNumber,
+      t.customerName,
+      t.type,
+      t.cardBrand,
+      `$${t.amount.toFixed(2)}`,
+      formatMoney(t.fee),
+      `$${t.net.toFixed(2)}`,
+      '[  ]'
     ]);
-    txns.forEach((t) => {
-      tableBody.push([
-        formatClockTime(t.dateTime),
-        t.orderNumber,
-        t.customerName,
-        t.type,
-        t.cardBrand,
-        `$${t.amount.toFixed(2)}`,
-        formatMoney(t.fee),
-        `$${t.net.toFixed(2)}`,
-        '[  ]'
-      ]);
-    });
-    tableBody.push([
-      {
-        content: `Batch Subtotal — ${fileName} (${txns.length} txns)`,
-        colSpan: 5,
-        styles: {
-          fillColor: [248, 250, 252],
-          textColor: [30, 41, 59],
-          fontStyle: 'bold',
-          halign: 'right'
-        }
-      },
-      {
-        content: `$${fileSubtotal.toFixed(2)}`,
-        styles: { fillColor: [248, 250, 252], textColor: [30, 41, 59], fontStyle: 'bold', halign: 'right' }
-      },
-      {
-        content: formatMoney(fileFees),
-        styles: { fillColor: [248, 250, 252], textColor: [100, 116, 139], fontStyle: 'bold', halign: 'right' }
-      },
-      {
-        content: `$${fileNet.toFixed(2)}`,
-        styles: { fillColor: [248, 250, 252], textColor: [30, 41, 59], fontStyle: 'bold', halign: 'right' }
-      },
-      { content: '', styles: { fillColor: [248, 250, 252] } }
-    ]);
-  });
 
   autoTable(doc, {
     startY: 45,
