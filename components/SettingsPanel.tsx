@@ -382,7 +382,7 @@ export const SettingsPanel: React.FC = () => {
         )}
 
         {updateError && <p className="text-sm font-mono text-pink-400">{updateError}</p>}
-        {updateStatus?.message && !updateError && (
+        {updateStatus?.message && !updateError && updateStatus.state !== 'available' && updateStatus.state !== 'downloaded' && (
           <p className={`text-sm font-mono ${updateStatus.state === 'error' ? 'text-pink-400' : 'text-cyan-300'}`}>
             {updateStatus.message}
           </p>

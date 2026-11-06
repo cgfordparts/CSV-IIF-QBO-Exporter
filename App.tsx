@@ -51,7 +51,6 @@ const App: React.FC = () => {
   const [selectedExportDays, setSelectedExportDays] = useState<string[]>([]);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const [updateNotice, setUpdateNotice] = useState<UpdateStatus | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
 
   useEffect(() => {
     ipc.invoke('settings:get').then((res) => {
@@ -73,27 +72,14 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const runUpdate = async (channel: 'updates:apply') => {
-    setUpdateBusy(true);
-    try {
-      const result = await ipc.invoke(channel);
-      if (result) setUpdateNotice(result);
-    } catch (err) {
-      setUpdateNotice((current) => ({
-        ...(current || {}),
-        state: 'error',
-        message: err instanceof Error ? err.message : 'Update failed.',
-      }));
-    } finally {
-      setUpdateBusy(false);
-    }
-  };
-
   const showUpdateBanner = Boolean(
     updateNotice && (
-      ['available', 'downloading', 'downloaded', 'installing'].includes(updateNotice.state) ||
+      ['downloading', 'installing'].includes(updateNotice.state) ||
       (updateNotice.state === 'error' && updateNotice.announce)
     )
+  );
+  const updateBadge = Boolean(
+    updateNotice && ['available', 'downloaded', 'downloading', 'installing'].includes(updateNotice.state)
   );
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -394,14 +380,23 @@ const App: React.FC = () => {
             <button
               type="button"
               onClick={() => setViewMode('SETTINGS')}
-              title="Settings"
-              className={`h-10 w-10 rounded-lg border flex items-center justify-center transition-colors ${
+              title={updateBadge ? 'Settings. 1 update is available.' : 'Settings'}
+              aria-label={updateBadge ? 'Settings, 1 update available' : 'Settings'}
+              className={`relative h-10 w-10 rounded-lg border flex items-center justify-center transition-colors ${
                 viewMode === 'SETTINGS'
                   ? 'bg-cyan-500 text-black border-cyan-500'
                   : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-white hover:border-cyan-500/50'
               }`}
             >
               <Settings className="w-4 h-4" />
+              {updateBadge && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -top-2 -right-2 grid h-[22px] w-[22px] place-items-center rounded-full border-2 border-zinc-950 bg-rose-500 text-[12px] font-bold leading-none text-white shadow-[0_1px_3px_rgba(0,0,0,0.55)]"
+                >
+                  <span className="block pt-px">1</span>
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -414,16 +409,6 @@ const App: React.FC = () => {
               {updateNotice.message || 'A newer release is on GitHub.'}
             </p>
             <div className="flex gap-2">
-              {(updateNotice.state === 'available' || updateNotice.state === 'downloaded') && (
-                <button
-                  type="button"
-                  disabled={updateBusy}
-                  onClick={() => runUpdate('updates:apply')}
-                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-black text-xs font-mono font-bold uppercase tracking-widest"
-                >
-                  Update
-                </button>
-              )}
               {updateNotice.state === 'error' && (
                 <button
                   type="button"
