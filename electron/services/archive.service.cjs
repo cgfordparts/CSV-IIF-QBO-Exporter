@@ -130,12 +130,26 @@ function dayEndDir(yearMonth, source) {
   return ensureDir(path.join(root, monthFolderName(yearMonth), 'Day End', sourceLabel(source)));
 }
 
+function shopifyDaysFromContent(fileContent) {
+  const { header, rows } = parseCsvRows(fileContent);
+  if (!header) return [];
+  const dateIdx = header.findIndex((col) => headerName(col) === 'Transaction Date');
+  if (dateIdx < 0) return [];
+  const days = [];
+  rows.forEach((row) => {
+    const day = calendarDayFromShopifyDateTime(row[dateIdx]);
+    if (day) days.push(day);
+  });
+  return days;
+}
+
 function archiveShopifyRawCsv(fileContent, transactions, originalFilename) {
   const days = [];
   (transactions || []).forEach((tx) => {
     const day = calendarDayFromShopifyDateTime(tx.dateTime);
     if (day) days.push(day);
   });
+  if (days.length === 0) days.push(...shopifyDaysFromContent(fileContent));
   const uniqueDays = [...new Set(days)].sort();
   if (uniqueDays.length === 0) {
     return { success: false, error: 'No calendar days found in Shopify CSV', saved: [] };
@@ -146,17 +160,32 @@ function archiveShopifyRawCsv(fileContent, transactions, originalFilename) {
   const baseName = originalBase || `${spanLabel} - Shopify`;
   const months = yearMonthsFromIsoDates(uniqueDays);
   const saved = [];
+  const updated = [];
 
   for (const ym of months) {
     const dir = rawDir(ym, 'SHOPIFY');
     const fullPath = originalBase
       ? path.join(dir, `${baseName}.csv`)
       : uniqueShopifyPath(dir, baseName);
+    const existed = fs.existsSync(fullPath);
     fs.writeFileSync(fullPath, fileContent, 'utf-8');
-    saved.push(fullPath);
+    if (existed) updated.push(fullPath);
+    else saved.push(fullPath);
   }
 
-  return { success: true, saved };
+  return { success: true, saved, updated, skipped: [] };
+}
+
+function headerName(col) {
+  return String(col || '').replace(/^"|"$/g, '').trim();
+}
+
+function projectRow(fromHeader, row, toHeader) {
+  const byName = new Map();
+  fromHeader.forEach((col, index) => {
+    byName.set(headerName(col), row[index] ?? '');
+  });
+  return toHeader.map((col) => byName.get(headerName(col)) ?? '');
 }
 
 function parseCsvRows(text) {
@@ -213,8 +242,8 @@ function archivePaypalRawCsv(fileContent) {
     return { success: false, error: 'Invalid PayPal CSV header', saved: [], skipped: [] };
   }
 
-  const dateIdx = header.findIndex((h) => String(h).replace(/^"|"$/g, '') === 'Date');
-  const typeIdx = header.findIndex((h) => String(h).replace(/^"|"$/g, '') === 'Type');
+  const dateIdx = header.findIndex((h) => headerName(h) === 'Date');
+  const typeIdx = header.findIndex((h) => headerName(h) === 'Type');
   if (dateIdx < 0) {
     return { success: false, error: 'PayPal CSV missing Date column', saved: [], skipped: [] };
   }
@@ -231,13 +260,15 @@ function archivePaypalRawCsv(fileContent) {
   const saved = [];
   const skipped = [];
   const updated = [];
-  const idIdx = header.findIndex((h) => String(h).replace(/^"|"$/g, '').trim() === 'Transaction ID');
-  const timeIdx = header.findIndex((h) => String(h).replace(/^"|"$/g, '').trim() === 'Time');
-  const grossIdx = header.findIndex((h) => String(h).replace(/^"|"$/g, '').trim() === 'Gross');
-  const rowKey = (cols) => {
-    if (idIdx >= 0 && String(cols[idIdx] || '').trim()) return `id:${String(cols[idIdx]).trim()}`;
-    return [dateIdx, timeIdx, typeIdx, grossIdx].map((idx) => (idx >= 0 ? cols[idx] : '')).join('|');
+  let rowsAdded = 0;
+  const idIdx = header.findIndex((h) => headerName(h) === 'Transaction ID');
+  const timeIdx = header.findIndex((h) => headerName(h) === 'Time');
+  const grossIdx = header.findIndex((h) => headerName(h) === 'Gross');
+  const rowKeyFor = (cols, idIndex, dateIndex, timeIndex, typeIndex, grossIndex) => {
+    if (idIndex >= 0 && String(cols[idIndex] || '').trim()) return `id:${String(cols[idIndex]).trim()}`;
+    return [dateIndex, timeIndex, typeIndex, grossIndex].map((idx) => (idx >= 0 ? cols[idx] : '')).join('|');
   };
+  const rowKey = (cols) => rowKeyFor(cols, idIdx, dateIdx, timeIdx, typeIdx, grossIdx);
 
   for (const [day, dayRows] of [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     if (dayRows.length === 0) continue;
@@ -256,22 +287,37 @@ function archivePaypalRawCsv(fileContent) {
     const existing = parseCsvRows(fs.readFileSync(fullPath, 'utf8'));
     const existingHeader = existing.header || header;
     const sameHeader = serializeLine(existingHeader) === serializeLine(header);
+    const existingIdIdx = existingHeader.findIndex((col) => headerName(col) === 'Transaction ID');
+    let alignedRows = dayRows;
+    let keyForIncoming = rowKey;
     if (!sameHeader) {
-      skipped.push(fullPath);
-      continue;
+      if (idIdx < 0 || existingIdIdx < 0) {
+        skipped.push(fullPath);
+        continue;
+      }
+      alignedRows = dayRows.map((row) => projectRow(header, row, existingHeader));
+      const existingDateIdx = existingHeader.findIndex((col) => headerName(col) === 'Date');
+      const existingTimeIdx = existingHeader.findIndex((col) => headerName(col) === 'Time');
+      const existingTypeIdx = existingHeader.findIndex((col) => headerName(col) === 'Type');
+      const existingGrossIdx = existingHeader.findIndex((col) => headerName(col) === 'Gross');
+      keyForIncoming = (cols) => rowKeyFor(cols, existingIdIdx, existingDateIdx, existingTimeIdx, existingTypeIdx, existingGrossIdx);
     }
-    const seen = new Set((existing.rows || []).map(rowKey));
-    const additions = dayRows.filter((row) => !seen.has(rowKey(row)));
+    const seen = new Set((existing.rows || []).map((row) => (
+      sameHeader ? rowKey(row) : keyForIncoming(row)
+    )));
+    const additions = alignedRows.filter((row) => !seen.has(keyForIncoming(row)));
     if (additions.length === 0) {
       skipped.push(fullPath);
       continue;
     }
-    const out = [serializeLine(header), ...(existing.rows || []).map(serializeLine), ...additions.map(serializeLine)].join('\n') + '\n';
+    const writeHeader = sameHeader ? header : existingHeader;
+    const out = [serializeLine(writeHeader), ...(existing.rows || []).map(serializeLine), ...additions.map(serializeLine)].join('\n') + '\n';
     fs.writeFileSync(fullPath, out, 'utf-8');
+    rowsAdded += additions.length;
     updated.push(fullPath);
   }
 
-  return { success: true, saved, skipped, updated };
+  return { success: true, saved, skipped, updated, rowsAdded };
 }
 
 function archiveRawCsv({ source, fileContent, transactions, filename }) {

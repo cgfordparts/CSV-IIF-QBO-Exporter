@@ -114,6 +114,7 @@ export interface EOMSummary {
   includedPayoutCount: number;
   archiveCount: number;
   brand?: 'SHOPIFY' | 'PAYPAL';
+  depositNote?: string;
 }
 
 export type EomSource = 'SHOPIFY' | 'PAYPAL';

@@ -122,6 +122,9 @@ const MatchCard: React.FC<{ label: string; summary: EOMSummary }> = ({ label, su
         </p>
       </div>
     </div>
+    {summary.depositNote && (
+      <p className="pl-6 text-sm font-mono text-amber-300">{summary.depositNote}</p>
+    )}
   </div>
 );
 
@@ -248,7 +251,7 @@ const ExceptionTable: React.FC<{ title: string; exceptions: EOMException[] }> = 
       <div className="px-6 py-4 border-b border-zinc-800">
         <h3 className="font-bold">{title}</h3>
         <p className="text-xs text-zinc-500 font-mono mt-1">
-          Refund-only ACH is excluded from the deposit total. Other rows appear when the totals do not match or a payout is still in transit.
+          Rows appear when a deposit falls outside the statement month or a payout has not reached the bank yet.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -427,30 +430,40 @@ export const EOMReconciler: React.FC = () => {
       let added = 0;
       let updated = 0;
       let skipped = 0;
+      let rowsAdded = 0;
+      const saveErrors: string[] = [];
       if (shopifyPayload.length > 0) {
         const result = await ipc.invoke('eom:import-payouts', shopifyPayload);
         added += result.added || 0;
         updated += result.updated || 0;
         skipped += result.skipped || 0;
+        rowsAdded += result.rowsAdded || 0;
+        if (Array.isArray(result.errors)) saveErrors.push(...result.errors);
+        else if (result?.error) saveErrors.push(result.error);
       }
       if (paypalPayload.length > 0) {
         const result = await ipc.invoke('paypal:import', paypalPayload);
         added += result.added || 0;
         updated += result.updated || 0;
         skipped += result.skipped || 0;
+        rowsAdded += result.rowsAdded || 0;
+        if (Array.isArray(result.errors)) saveErrors.push(...result.errors);
+        else if (result?.error) saveErrors.push(result.error);
       }
 
       await loadArchive();
       setPacket(null);
 
       const parts = [
-        `Imported ${added} new file${added === 1 ? '' : 's'}`,
-        updated ? `${updated} updated` : null,
-        skipped ? `${skipped} already archived` : null,
+        added ? `${added} new day file${added === 1 ? '' : 's'} saved` : null,
+        updated ? `${updated} saved day file${updated === 1 ? '' : 's'} gained missing rows` : null,
+        rowsAdded ? `${rowsAdded} PayPal row${rowsAdded === 1 ? '' : 's'} added` : null,
+        skipped ? `${skipped} already complete` : null,
         parseErrors.length ? `${parseErrors.length} skipped as invalid` : null,
       ].filter(Boolean);
-      setMessage(parts.join('. ') + '.');
-      if (parseErrors.length > 0 && shopifyPayload.length === 0 && paypalPayload.length === 0) {
+      setMessage((parts.join('. ') || 'Nothing new was saved') + '. Reconcile uses these saved days.');
+      if (saveErrors.length > 0) setError(saveErrors.slice(0, 5).join(' '));
+      else if (parseErrors.length > 0 && shopifyPayload.length === 0 && paypalPayload.length === 0) {
         setError(parseErrors.slice(0, 5).join(' '));
       }
     } catch (err) {
@@ -541,7 +554,7 @@ export const EOMReconciler: React.FC = () => {
           {paypalFiles.length > 0
             ? ` · ${paypalFiles.length} PayPal activity file${paypalFiles.length === 1 ? '' : 's'} · ${paypalParsed.withdrawals.filter((item) => item.payoutStatus !== 'in_transit').length} withdrawals`
             : ' · no PayPal activity files'}
-          . Uses the Shopify and PayPal CSVs saved from day-end imports, including neighboring months. A deposit counts when its bank date falls in this statement month.
+          . Uses the Shopify and PayPal CSVs saved in the month folders, including neighboring months. A deposit counts when its bank date falls in this statement month. Import CSVs and Import Folder update those same saved days. A PayPal activity file adds withdrawal rows the days are missing. A Shopify payout file replaces the saved copy of that payout.
           {shopifyDirectory ? ` Shopify folder: ${shopifyDirectory}.` : ''}
           {paypalDirectory ? ` PayPal folder: ${paypalDirectory}.` : ''}
         </p>

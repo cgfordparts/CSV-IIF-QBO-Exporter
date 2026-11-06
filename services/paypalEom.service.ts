@@ -100,7 +100,7 @@ const buildFromRows = (
         filename: depositCsvName(payoutDate, 0) || `${payoutDate}.csv`,
         suffix: 0,
         isPrimary: true,
-        bankDate: rollIfClosed(payoutDate),
+        bankDate: payoutDate,
         refundOnly: false,
         amount: -pulled,
         fee: 0,
@@ -188,16 +188,30 @@ export const mergePaypalActivityFiles = (
   return buildFromRows(rows, files[0]?.filename || 'paypal.csv');
 };
 
+const isBankMovement = (row: Record<string, unknown>): boolean => {
+  const type = String(row['Type'] || '').trim();
+  return WITHDRAWAL_TYPES.has(type) || type === 'Bank Deposit to PP Account';
+};
+
 export const reconcilePaypalEom = (
   files: { filename: string; content: string }[],
   fromDate: string,
   toDate: string,
   wellsFargoTotal: number
 ): EOMSummary => {
+  const rows = files.flatMap((file) => parseActivityRows(file.content));
   const { withdrawals, sales } = mergePaypalActivityFiles(files);
-  return reconcileEom(withdrawals, fromDate, toDate, wellsFargoTotal, {
+  const summary = reconcileEom(withdrawals, fromDate, toDate, wellsFargoTotal, {
     assignBankDates: false,
     calendarTransactions: sales,
     brand: 'PAYPAL',
   });
+  const salesInMonth = sales.some((line) => {
+    const day = getCalendarDateString(line.dateTime) || '';
+    return day >= fromDate && day <= toDate;
+  });
+  if (salesInMonth && !rows.some(isBankMovement)) {
+    summary.depositNote = 'These saved PayPal files have the sales and do not include the withdrawal to Wells Fargo. Import the original PayPal CSV for each day again. The withdrawal is kept, and this deposit total uses it.';
+  }
+  return summary;
 };

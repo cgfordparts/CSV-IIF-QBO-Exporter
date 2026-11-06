@@ -97,8 +97,6 @@ const importedArchiveDir = async () => {
 const archiveIndexPath = async () => path.join(await importedArchiveDir(), 'index.json');
 const archiveFilesDir = async () => path.join(await importedArchiveDir(), 'files');
 
-const isSafePayoutId = (payoutId) => typeof payoutId === 'string' && /^\d+$/.test(payoutId);
-
 const walkCsvFiles = async (dir, acc = []) => {
   let entries = [];
   try {
@@ -224,34 +222,45 @@ const registerSettingsIpc = () => {
   });
 };
 
-const isInsideDirectory = (root, target) => {
-  const resolvedRoot = path.resolve(root);
-  const resolvedTarget = path.resolve(target);
-  return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path.sep);
-};
+const importIntoMonthArchive = async (source, incoming) => {
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+  let rowsAdded = 0;
+  const errors = [];
 
-const monthFolderFromDate = (payoutDate) => {
-  const match = String(payoutDate || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return null;
-  return `${match[2]}-${match[1]}`;
-};
-
-const safeRelativePath = (relativePath, filename, payoutDate) => {
-  const normalized = String(relativePath || '').replace(/\\/g, '/');
-  const parts = normalized.split('/').filter((part) => part && part !== '.' && part !== '..');
-  const baseName = path.basename(String(filename || parts[parts.length - 1] || 'payout.csv'));
-
-  if (parts.length > 1) {
-    parts[parts.length - 1] = baseName;
-    return parts.join(path.sep);
+  for (const record of incoming || []) {
+    const content = String(record?.content || '');
+    const filename = path.basename(String(record?.filename || 'import.csv'));
+    if (!content || !filename.toLowerCase().endsWith('.csv')) {
+      skipped += 1;
+      continue;
+    }
+    const result = archiveService.archiveRawCsv({
+      source,
+      fileContent: content,
+      filename,
+      transactions: record?.transactions,
+    });
+    if (!result?.success) {
+      errors.push(`${filename}: ${result?.error || 'Could not save into the month folders.'}`);
+      continue;
+    }
+    added += (result.saved || []).length;
+    updated += (result.updated || []).length;
+    skipped += (result.skipped || []).length;
+    rowsAdded += result.rowsAdded || 0;
   }
 
-  const monthFolder = monthFolderFromDate(payoutDate);
-  if (monthFolder) {
-    return path.join(monthFolder, baseName);
-  }
-
-  return baseName;
+  return {
+    added,
+    updated,
+    skipped,
+    rowsAdded,
+    error: errors[0] || null,
+    errors,
+    dataDirectory: await getDataDirectory(),
+  };
 };
 
 const registerEomIpc = () => {
@@ -275,66 +284,13 @@ const registerEomIpc = () => {
     return { records, dataDirectory };
   });
 
-  safeHandle('eom:import-payouts', async (_event, incoming = []) => {
-    const dataDirectory = await getDataDirectory();
-    await fsp.mkdir(dataDirectory, { recursive: true });
-    let added = 0;
-    let updated = 0;
-    let skipped = 0;
-
-    for (const record of incoming) {
-      const content = String(record?.content || '');
-      const filename = path.basename(String(record?.filename || 'payout.csv'));
-      if (!content || !filename.toLowerCase().endsWith('.csv')) {
-        skipped += 1;
-        continue;
-      }
-
-      let destRel = safeRelativePath(record?.relativePath, filename, record?.payoutDate);
-      const firstFolder = String(destRel).split(/[\\/]/)[0];
-      if (firstFolder.toLowerCase() !== 'shopify') {
-        destRel = path.join('Shopify', destRel);
-      }
-      const dest = path.resolve(dataDirectory, destRel);
-      if (!isInsideDirectory(dataDirectory, dest)) {
-        skipped += 1;
-        continue;
-      }
-
-      try {
-        await fsp.access(dest);
-        const existing = await fsp.readFile(dest, 'utf8');
-        if (existing === content) {
-          skipped += 1;
-          continue;
-        }
-        await fsp.writeFile(dest, content, 'utf8');
-        updated += 1;
-        continue;
-      } catch {
-        // File does not exist yet.
-      }
-
-      await fsp.mkdir(path.dirname(dest), { recursive: true });
-      await fsp.writeFile(dest, content, 'utf8');
-      added += 1;
-    }
-
-    const csvFiles = await walkCsvFiles(dataDirectory);
-    return {
-      added,
-      updated,
-      skipped,
-      total: csvFiles.length,
-      dataDirectory,
-    };
-  });
+  safeHandle('eom:import-payouts', async (_event, incoming = []) => (
+    importIntoMonthArchive('SHOPIFY', incoming)
+  ));
 
   safeHandle('eom:clear-archive', async () => {
     return { success: false, error: 'The data folder is not cleared automatically.' };
   });
-
-  const paypalDirectory = async () => path.join(await getDataDirectory(), 'Paypal');
 
   safeHandle('paypal:list-archive', async () => {
     const dataDirectory = await getDataDirectory();
@@ -356,54 +312,9 @@ const registerEomIpc = () => {
     return { records, dataDirectory };
   });
 
-  safeHandle('paypal:import', async (_event, incoming = []) => {
-    const paypalDir = await paypalDirectory();
-    await fsp.mkdir(paypalDir, { recursive: true });
-    let added = 0;
-    let updated = 0;
-    let skipped = 0;
-
-    for (const record of incoming) {
-      const content = String(record?.content || '');
-      const filename = path.basename(String(record?.filename || 'paypal.csv'));
-      if (!content || !filename.toLowerCase().endsWith('.csv')) {
-        skipped += 1;
-        continue;
-      }
-
-      const dest = path.resolve(paypalDir, filename);
-      if (!isInsideDirectory(paypalDir, dest)) {
-        skipped += 1;
-        continue;
-      }
-
-      try {
-        await fsp.access(dest);
-        const existing = await fsp.readFile(dest, 'utf8');
-        if (existing === content) {
-          skipped += 1;
-          continue;
-        }
-        await fsp.writeFile(dest, content, 'utf8');
-        updated += 1;
-        continue;
-      } catch {
-        // File does not exist yet.
-      }
-
-      await fsp.writeFile(dest, content, 'utf8');
-      added += 1;
-    }
-
-    const csvFiles = await walkCsvFiles(paypalDir);
-    return {
-      added,
-      updated,
-      skipped,
-      total: csvFiles.length,
-      dataDirectory: paypalDir,
-    };
-  });
+  safeHandle('paypal:import', async (_event, incoming = []) => (
+    importIntoMonthArchive('PAYPAL', incoming)
+  ));
 };
 
 const registerQuickBooksIpc = () => {

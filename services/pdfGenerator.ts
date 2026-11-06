@@ -794,7 +794,10 @@ export const generateEOMPdf = (
       ['Calculated deposits', usd(packet.paypal.calculatedTotal)],
       ['Status', matchStatus(packet.paypal)],
       ['Withdrawals included', String(packet.paypal.includedPayoutCount)],
-      ['Calendar month gross', usd(packet.paypal.calendarGross)]
+      ['Calendar month gross', usd(packet.paypal.calendarGross)],
+      ...(packet.paypal.depositNote
+        ? [[{ content: packet.paypal.depositNote, colSpan: 2, styles: { textColor: [180, 83, 9], fontStyle: 'italic' } }]]
+        : [])
     );
   }
 

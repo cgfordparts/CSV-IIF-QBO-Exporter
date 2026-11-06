@@ -470,15 +470,6 @@ export const reconcileEom = (
       return;
     }
 
-    if (inWindow && payout.refundOnly) {
-      exceptions.push({
-        kind: 'refund_only',
-        payout,
-        note: `Refund-only ACH excluded from the Wells Fargo deposit total (${formatUsd(payout.net)}).`,
-      });
-      return;
-    }
-
     if (inWindow) {
       included.push(payout);
     }
@@ -492,7 +483,6 @@ export const reconcileEom = (
     const nearFrom = addDays(fromDate, -3);
     const nearTo = addDays(toDate, 3);
     dated.forEach((payout) => {
-      if (payout.refundOnly) return;
       const bank = payout.bankDate;
       const inWindow = inRange(bank, fromDate, toDate);
       const justOutside =
