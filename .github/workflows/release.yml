@@ -36,9 +36,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "v${{ steps.package.outputs.version }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+          draft=$(gh release view "v${{ steps.package.outputs.version }}" --repo "${{ github.repository }}" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [ "$draft" = "false" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release v${{ steps.package.outputs.version }} is already on GitHub. Raise the version in package.json to publish another update."
+            echo "Release v${{ steps.package.outputs.version }} is already published. Raise the version in package.json to publish another update."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -55,3 +56,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Make the release public
+        if: steps.release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "v${{ steps.package.outputs.version }}" --repo "${{ github.repository }}" --draft=false

@@ -2,7 +2,7 @@
   "name": "shopify-transaction-reporter",
   "productName": "Shopify and PayPal Reporter",
   "private": true,
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "A tool to audit and organize Shopify and PayPal sales data.",
   "main": "electron/main.cjs",
   "type": "module",
@@ -66,7 +66,8 @@
     "publish": {
       "provider": "github",
       "owner": "cgfordparts",
-      "repo": "CSV-IIF-QBO-Exporter"
+      "repo": "CSV-IIF-QBO-Exporter",
+      "releaseType": "release"
     },
     "nsis": {
       "oneClick": false,
